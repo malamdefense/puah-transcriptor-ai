@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>מערכת תמלול וזיהוי דוברים — מכון פוע"ה</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">פ</div>
+      <div>
+        <h1>מערכת תמלול וזיהוי דוברים</h1>
+        <p class="sub">מכון פוע"ה · עיבוד מקומי מאובטח (On-Prem)</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button id="dashBtn" class="btn ghost dash-btn">📊 דשבורד</button>
+      <div class="health" id="health">בודק חיבור…</div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Right: Upload + job list -->
+    <section class="sidebar">
+      <div class="card upload-card">
+        <h2>העלאת הקלטה</h2>
+        <div id="dropzone" class="dropzone">
+          <input type="file" id="fileInput" accept=".mp4,.m4a,.mov,.mkv,.webm,.mp3,.wav,.aac,.avi" hidden />
+          <div class="dz-icon">⬆</div>
+          <p class="dz-main">גררו לכאן קובץ הקלטה</p>
+          <p class="dz-sub">או <button type="button" id="browseBtn" class="link">בחרו קובץ</button></p>
+          <p class="dz-hint">mp4, mov, m4a, mp3, wav ועוד · עד 2GB</p>
+        </div>
+
+        <div class="options">
+          <label class="opt">
+            <span>מספר דוברים</span>
+            <select id="numSpeakers">
+              <option value="">זיהוי אוטומטי</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="selectedFile" class="selected hidden">
+          <span id="selectedName"></span>
+          <button id="uploadBtn" class="btn primary">התחל תמלול</button>
+        </div>
+        <div id="uploadStatus" class="upload-status"></div>
+      </div>
+
+      <div class="card search-card">
+        <h2>חיפוש בכל התמלולים</h2>
+        <input id="globalSearch" class="search-input" type="search"
+               placeholder="חפשו מילה או ביטוי בכל ההקלטות…" />
+        <div id="searchResults" class="search-results"></div>
+      </div>
+
+      <div class="card jobs-card">
+        <div class="jobs-head">
+          <h2>הקלטות</h2>
+          <button id="refreshBtn" class="icon-btn" title="רענון">⟳</button>
+        </div>
+        <ul id="jobsList" class="jobs-list"></ul>
+      </div>
+    </section>
+
+    <!-- Left: Transcript view -->
+    <section class="content">
+      <div id="emptyState" class="empty">
+        <div class="empty-icon">🎙️</div>
+        <h2>בחרו הקלטה מהרשימה</h2>
+        <p>או העלו הקלטה חדשה כדי להתחיל בתמלול וזיהוי הדוברים.</p>
+      </div>
+
+      <div id="dashboardView" class="dashboard hidden">
+        <div class="dash-head">
+          <h2>📊 דשבורד סטטיסטיקות</h2>
+          <div style="display:flex;gap:8px;align-items:center">
+            <a id="exportFeedbackXlsx" class="btn ghost" href="/api/export/feedback.xlsx" download>⬇ ייצוא Excel (סיכום+משוב)</a>
+            <button id="dashRefresh" class="icon-btn" title="רענון">⟳</button>
+          </div>
+        </div>
+        <div id="kpis" class="kpis"></div>
+        <div class="dash-grid">
+          <div class="dash-card">
+            <h3>הקלטות ב-14 הימים האחרונים</h3>
+            <div id="chartPerDay" class="bars"></div>
+          </div>
+          <div class="dash-card">
+            <h3>התפלגות מספר דוברים</h3>
+            <div id="chartSpeakers" class="bars"></div>
+          </div>
+          <div class="dash-card wide">
+            <h3>מילות מפתח נפוצות</h3>
+            <div id="chartKeywords" class="kw-cloud"></div>
+          </div>
+          <div class="dash-card wide">
+            <h3>נושאים נפוצים</h3>
+            <div id="chartTopics" class="kw-cloud"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="transcriptView" class="transcript hidden">
+        <div class="transcript-head">
+          <div>
+            <h2 id="tTitle">תמלול</h2>
+            <p class="meta" id="tMeta"></p>
+          </div>
+          <div class="actions">
+            <div class="export">
+              <span>ייצוא:</span>
+              <a id="expWord" class="btn ghost" download>Word</a>
+              <a id="expTxt" class="btn ghost" download>טקסט</a>
+              <a id="expSrt" class="btn ghost" download>SRT</a>
+              <a id="expVtt" class="btn ghost" download>VTT</a>
+              <a id="expJson" class="btn ghost" download>JSON</a>
+            </div>
+            <div class="export pii-export">
+              <span title="גרסה שעברה הסרת פרטים מזהים">PII:</span>
+              <a id="expPiiWord" class="btn ghost" download>Word</a>
+              <a id="expPiiJson" class="btn ghost" download>JSON</a>
+            </div>
+          </div>
+        </div>
+
+        <div id="summarySection" class="summary-section"></div>
+        <div id="puahSection" class="summary-section"></div>
+
+        <div class="player-wrap">
+          <video id="player" controls preload="metadata"></video>
+        </div>
+
+        <div id="speakerLegend" class="legend"></div>
+
+        <div class="findbar">
+          <input id="findInput" type="search" placeholder="חיפוש בתוך התמלול…" />
+          <span id="findCount" class="find-count"></span>
+          <button id="findPrev" class="icon-btn" title="הקודם">↑</button>
+          <button id="findNext" class="icon-btn" title="הבא">↓</button>
+        </div>
+
+        <div id="segments" class="segments"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

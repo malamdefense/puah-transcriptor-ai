@@ -1,0 +1,1 @@
+"""Processing pipeline: audio extraction -> transcription -> speaker diarization -> merging."""

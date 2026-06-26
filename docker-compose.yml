@@ -1,0 +1,54 @@
+# Run the On-Prem system: Ollama + API + worker, share data and GPU.
+# Requires nvidia-container-toolkit installed on the host.
+# Note: PII removal (HebSafeHarbor) is not included here — see DEPLOYMENT.md section 10.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ./data/ollama:/root/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # After deployment: docker compose exec ollama ollama pull gemma4:12b
+
+  api:
+    build: .
+    image: puah-transcribe:latest
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - PUAH_LLM_BASE_URL=http://ollama:11434/v1   # Ollama service of compose
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  worker:
+    build: .
+    image: puah-transcribe:latest
+    command: python -m app.worker
+    env_file: .env
+    environment:
+      - PUAH_LLM_BASE_URL=http://ollama:11434/v1
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    # Assign GPU to worker (it runs the transcription and diarization models)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

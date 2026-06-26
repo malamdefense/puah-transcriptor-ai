@@ -1,0 +1,18 @@
+[Unit]
+Description=Puah transcription API + Web UI
+After=network.target
+
+[Service]
+Type=simple
+# Adjust the user and path according to your server:
+User=puah
+WorkingDirectory=/opt/puah
+Environment=PYTHONUTF8=1
+Environment=PYTHONUNBUFFERED=1
+# Listens on localhost only — exposure is handled via a reverse proxy (see deploy/nginx/puah.conf)
+ExecStart=/opt/puah/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
