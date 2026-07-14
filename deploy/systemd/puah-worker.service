@@ -5,13 +5,13 @@ Wants=ollama.service
 
 [Service]
 Type=simple
-# Adjust the user and path according to your server:
+# התאימו את המשתמש והנתיב לשרת שלכם:
 User=puah
 WorkingDirectory=/opt/puah
 Environment=PYTHONUTF8=1
 Environment=PYTHONUNBUFFERED=1
 Environment=HF_HUB_DISABLE_SYMLINKS_WARNING=1
-# For offline mode (after models are cached), uncomment this:
+# למצב מנותק-רשת (לאחר שהמודלים במטמון), הסירו את ההערה:
 # Environment=HF_HUB_OFFLINE=1
 # Environment=TRANSFORMERS_OFFLINE=1
 ExecStart=/opt/puah/.venv/bin/python -m app.worker

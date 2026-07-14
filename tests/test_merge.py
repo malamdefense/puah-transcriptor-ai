@@ -1,4 +1,4 @@
-"""Tests for the core merge logic — mapping words to speakers. Runs without GPU/models."""
+"""בדיקות ליבת המיזוג — מיפוי מילים לדוברים. רצות ללא GPU/מודלים."""
 
 import sys
 from pathlib import Path
@@ -25,7 +25,7 @@ def test_speaker_picks_max_overlap():
     ]
     assert _speaker_for_interval(0.5, 1.5, turns) == "SPEAKER_00"
     assert _speaker_for_interval(6.0, 7.0, turns) == "SPEAKER_01"
-    # Word on the boundary with more overlap for 01
+    # מילה על הגבול עם יותר חפיפה ל-01
     assert _speaker_for_interval(4.6, 6.0, turns) == "SPEAKER_01"
 
 
@@ -44,7 +44,7 @@ def test_merge_groups_by_speaker_and_gap():
                 _w(0.0, 1.0, "שלום"),
                 _w(1.0, 2.0, "מה"),
                 _w(2.0, 3.0, "שלומך"),
-                _w(6.0, 7.0, "טוב"),   # Other speaker
+                _w(6.0, 7.0, "טוב"),   # דובר אחר
                 _w(7.0, 8.0, "מאוד"),
             ],
         }
@@ -64,7 +64,7 @@ def test_merge_groups_by_speaker_and_gap():
 
 
 def test_merge_without_word_timestamps():
-    """Nefila kinnanit le-r'et keshif word timestamps."""
+    """נפילה חיננית לרמת קטע כשאין חותמות-זמן למילים."""
     asr = [
         {"start": 0.0, "end": 4.0, "text": "קטע ראשון", "words": []},
         {"start": 4.0, "end": 8.0, "text": "קטע שני", "words": []},
@@ -84,9 +84,9 @@ def test_merge_empty():
 
 
 if __name__ == "__main__":
-    # Direct run without pytest
+    # הרצה ישירה ללא pytest
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
         fn()
         print(f"  ok: {fn.__name__}")
-    print(f"\nAll {len(fns)} tests passed.")
+    print(f"\nכל {len(fns)} הבדיקות עברו.")

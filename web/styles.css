@@ -268,6 +268,35 @@ mark.current { background: #ff9a3c; box-shadow: 0 0 0 2px rgba(255,154,60,.4); }
 .kw-item .c { background: var(--accent); color: #fff; border-radius: 10px; padding: 0 7px; font-size: 11px; font-weight: 700; }
 .dash-empty { color: var(--text-dim); font-size: 13px; }
 
+/* ---- לוגואים בכותרת ---- */
+.topbar-start { display: flex; align-items: center; gap: 14px; }
+.brand-logo { max-height: 46px; max-width: 170px; object-fit: contain; border-radius: 6px; }
+
+/* ---- הגדרות: מנהל לוגואים ---- */
+.logo-manager { display: flex; flex-wrap: wrap; gap: 24px; }
+.logo-editor { display: flex; flex-direction: column; gap: 10px; }
+.le-title { font-size: 13px; color: var(--text-dim); }
+.logo-preview {
+  width: 190px; height: 80px; border: 1px dashed var(--border); border-radius: 10px;
+  display: grid; place-items: center; background: var(--card-2); color: var(--text-dim); font-size: 12px;
+}
+.logo-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.le-btns { display: flex; gap: 8px; }
+
+/* ---- הגדרות: עורך פרומפטים ---- */
+.prompt-field { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+.pf-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.pf-head label { font-weight: 600; font-size: 14px; }
+.pf-badge { font-size: 11px; background: rgba(47,125,246,.16); color: var(--accent-2); border-radius: 10px; padding: 1px 8px; }
+.prompt-field textarea {
+  width: 100%; min-height: 130px; resize: vertical; background: var(--card-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; font: 13px/1.6 inherit;
+  direction: rtl;
+}
+.prompt-field textarea:focus { outline: none; border-color: var(--accent); }
+.pf-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+.pf-saved { color: var(--ok); font-size: 12px; }
+
 .segments { display: flex; flex-direction: column; gap: 12px; }
 .seg {
   display: grid; grid-template-columns: 1fr; gap: 4px;

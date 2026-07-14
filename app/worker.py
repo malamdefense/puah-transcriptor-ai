@@ -1,7 +1,7 @@
-"""Worker process: takes jobs from the queue, runs the pipeline, and saves the results.
+"""תהליך ה-worker: צורך משימות מהתור, מריץ את צינור העיבוד ושומר תוצאות.
 
-Runs as a separate process from the API to keep GPU models in memory and keep the API available.
-Processes one job at a time (GPU is sequential resource) — prevents OOM.
+רץ כתהליך נפרד מ-API כדי שמודלי ה-GPU יישארו תושבים בזיכרון וכדי ש-API יישאר זמין.
+מעבד משימה אחת בכל רגע (ה-GPU הוא משאב סדרתי) — מונע OOM.
 """
 
 from __future__ import annotations
@@ -48,10 +48,10 @@ _running = True
 def _stop(*_args):
     global _running
     _running = False
-    log.info("Received stop signal — finishing the current job...")
+    log.info("מקבל אות עצירה — מסיים לאחר המשימה הנוכחית...")
 
 
-# Divide the total progress percentage between pipeline stages
+# חלוקת אחוז ההתקדמות הכולל בין שלבי הצינור
 _STAGE_WEIGHTS = {
     "extracting_audio": (0.0, 5.0),
     "transcribing": (5.0, 65.0),
@@ -75,23 +75,23 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
     last_update = [0.0]
 
     def report(stage: str, inner_pct: float, force: bool = False) -> None:
-        # Limit DB update rate to ~once per second to avoid clogging
+        # מגביל קצב עדכוני DB ל-~פעם בשנייה כדי לא להציף
         now = time.time()
         if not force and (now - last_update[0]) < 1.0:
             return
         last_update[0] = now
         update_job(job_id, stage=stage, progress=round(_stage_progress(stage, inner_pct), 1))
 
-    # 1) Extract audio
-    log.info("Job %s: extract audio", job_id)
+    # 1) חילוץ אודיו
+    log.info("משימה %s: חילוץ אודיו", job_id)
     update_job(job_id, stage="extracting_audio", progress=0)
     extract_audio(uploaded, audio_path)
     duration = get_duration(audio_path) or get_duration(uploaded)
     update_job(job_id, duration_sec=duration)
     report("extracting_audio", 100.0, force=True)
 
-    # 2) Transcription
-    log.info("Job %s: transcription (%.0f seconds audio)", job_id, duration)
+    # 2) תמלול
+    log.info("משימה %s: תמלול (%.0f שניות אודיו)", job_id, duration)
     update_job(job_id, stage="transcribing")
     asr_segments = transcriber.transcribe(
         audio_path,
@@ -100,19 +100,19 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
     )
     report("transcribing", 100.0, force=True)
 
-    # 3) Speaker diarization
-    log.info("Job %s: speaker diarization", job_id)
+    # 3) זיהוי דוברים
+    log.info("משימה %s: זיהוי דוברים", job_id)
     update_job(job_id, stage="diarizing")
     turns = diarizer.diarize(audio_path, num_speakers=job.get("num_speakers"))
     report("diarizing", 100.0, force=True)
 
-    # 4) Merge
-    log.info("Job %s: merge", job_id)
+    # 4) מיזוג
+    log.info("משימה %s: מיזוג", job_id)
     update_job(job_id, stage="merging")
     segments, speaker_ids = merge(asr_segments, turns)
 
-    # Display names for speakers: "Speaker 1", "Speaker 2", ...
-    speakers = {sid: f"Speaker {i}" for i, sid in enumerate(speaker_ids, start=1)}
+    # שמות תצוגה דיפולטיביים לדוברים: "דובר 1", "דובר 2", ...
+    speakers = {sid: f"דובר {i}" for i, sid in enumerate(speaker_ids, start=1)}
 
     result = {
         "job_id": job_id,
@@ -129,39 +129,39 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
     }
     save_result(job_id, result)
 
-    # Full-text search index
+    # אינדוקס לחיפוש מלא
     index_job_segments(job_id, result)
 
-    # 5) Automatic summary (best-effort — doesn't fail the job if the model is not available)
+    # 5) סיכום אוטומטי (best-effort — לא מפיל את המשימה אם המודל לא זמין)
     if settings.summary_enabled and segments:
-        log.info("Job %s: summary", job_id)
+        log.info("משימה %s: סיכום", job_id)
         update_job(job_id, stage="summarizing", progress=_stage_progress("summarizing", 10))
         try:
             result["summary"] = summarize(settings, result)
             save_result(job_id, result)
-            log.info("Job %s: summary generated", job_id)
+            log.info("משימה %s: סיכום הופק", job_id)
         except LLMError as exc:
-            log.warning("Job %s: skipped summary — %s", job_id, exc)
+            log.warning("משימה %s: דילוג על סיכום — %s", job_id, exc)
         except Exception as exc:  # noqa: BLE001
-            log.warning("Job %s: error in summary (ignored) — %s", job_id, exc)
+            log.warning("משימה %s: שגיאה בסיכום (מתעלם) — %s", job_id, exc)
 
-        # Puah-specific outputs: client summary + advisor feedback (each best-effort separately)
+        # תוצרי פוע"ה: סיכום ללקוח + משוב ליועץ (כל אחד best-effort בנפרד)
         if settings.client_summary_enabled:
             try:
                 result["client_summary"] = generate_client_summary(settings, result)
                 save_result(job_id, result)
-                log.info("Job %s: client summary generated", job_id)
+                log.info("משימה %s: סיכום ללקוח הופק", job_id)
             except Exception as exc:  # noqa: BLE001
-                log.warning("Job %s: skipped client summary — %s", job_id, exc)
+                log.warning("משימה %s: דילוג על סיכום ללקוח — %s", job_id, exc)
         if settings.feedback_enabled:
             try:
                 result["feedback"] = generate_feedback(settings, result)
                 save_result(job_id, result)
-                log.info("Job %s: advisor feedback generated", job_id)
+                log.info("משימה %s: משוב ליועץ הופק", job_id)
             except Exception as exc:  # noqa: BLE001
-                log.warning("Job %s: skipped advisor feedback — %s", job_id, exc)
+                log.warning("משימה %s: דילוג על משוב — %s", job_id, exc)
 
-    # 6) Export Word + PII removal (best-effort — doesn't fail the job)
+    # 6) ייצוא Word + הסרת PII (best-effort — לא מפילים את המשימה)
     if segments:
         _finalize_outputs(settings, job_id, job, result)
 
@@ -174,25 +174,25 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
         finished_at=time.time(),
         error=None,
     )
-    log.info("Job %s: completed (%d speakers, %d segments)", job_id, len(speaker_ids), len(segments))
+    log.info("משימה %s: הסתיימה (%d דוברים, %d קטעים)", job_id, len(speaker_ids), len(segments))
 
 
 def _finalize_outputs(settings: Settings, job_id: str, job: dict, result: dict) -> None:
-    """Export Word and PII removal — both best-effort, doesn't fail the job."""
+    """ייצוא Word והסרת PII — שניהם best-effort, לא מפילים את המשימה."""
     title = job.get("original_name") or job_id
     results_dir = settings.results_dir
 
-    # Export Word of the original transcription
+    # ייצוא Word של התמלול המקורי
     if settings.word_export_enabled:
         try:
             build_docx(result, results_dir / f"{job_id}.docx", title=title)
-            log.info("Job %s: Word document created", job_id)
+            log.info("משימה %s: נוצר Word", job_id)
         except Exception as exc:  # noqa: BLE001
-            log.warning("Job %s: Word export failed (ignored) — %s", job_id, exc)
+            log.warning("משימה %s: ייצוא Word נכשל (מתעלם) — %s", job_id, exc)
 
-    # PII removal: save JSON + Word de-identified, with .pii suffix
+    # הסרת PII: שמירת JSON + Word מנוקים, באותו שם בתוספת .pii
     if settings.pii_enabled:
-        log.info("Job %s: PII removal", job_id)
+        log.info("משימה %s: הסרת PII", job_id)
         try:
             pii_result = deidentify_result(settings, result)
             (results_dir / f"{job_id}.pii.json").write_text(
@@ -202,11 +202,11 @@ def _finalize_outputs(settings: Settings, job_id: str, job: dict, result: dict) 
                 build_docx(
                     pii_result, results_dir / f"{job_id}.pii.docx", title=title, deidentified=True
                 )
-            log.info("Job %s: PII version saved", job_id)
+            log.info("משימה %s: גרסת PII נשמרה", job_id)
         except PIIError as exc:
-            log.warning("Job %s: PII skipped — %s", job_id, exc)
+            log.warning("משימה %s: הסרת PII דולגה — %s", job_id, exc)
         except Exception as exc:  # noqa: BLE001
-            log.warning("Job %s: PII failed (ignored) — %s", job_id, exc)
+            log.warning("משימה %s: הסרת PII נכשלה (מתעלם) — %s", job_id, exc)
 
 
 def main() -> None:
@@ -217,27 +217,27 @@ def main() -> None:
     init_db()
     n = reset_stuck_jobs()
     if n:
-        log.info("Found %d jobs stuck in processing", n)
+        log.info("אופסו %d משימות שנתקעו ב-processing", n)
 
     transcriber = Transcriber(settings)
     diarizer = Diarizer(settings)
 
     if settings.preload_models:
-        log.info("Preloading models (device=%s, compute=%s)...", transcriber.device, transcriber.compute_type)
+        log.info("טוען מודלים מראש (device=%s, compute=%s)...", transcriber.device, transcriber.compute_type)
         try:
             transcriber.load()
             diarizer.load()
-            log.info("Models loaded successfully.")
+            log.info("המודלים נטענו בהצלחה.")
         except Exception as exc:  # noqa: BLE001
-            log.warning("Preloading models failed (will continue lazily on demand): %s", exc)
+            log.warning("טעינה מוקדמת נכשלה (ימשיך עצלן בעת הצורך): %s", exc)
 
-    log.info("Worker is running. Waiting for jobs...")
+    log.info("ה-worker פעיל. ממתין למשימות...")
     while _running:
         job = None
         try:
             job = claim_next_job()
         except Exception as exc:  # noqa: BLE001
-            log.error("Error claiming job: %s", exc)
+            log.error("שגיאה בתפיסת משימה: %s", exc)
             time.sleep(settings.poll_interval_sec)
             continue
 
@@ -249,7 +249,7 @@ def main() -> None:
             process_job(job, transcriber, diarizer)
         except Exception as exc:  # noqa: BLE001
             tb = traceback.format_exc()
-            log.error("Job %s failed: %s\n%s", job["id"], exc, tb)
+            log.error("משימה %s נכשלה: %s\n%s", job["id"], exc, tb)
             update_job(
                 job["id"],
                 status="error",
@@ -257,12 +257,12 @@ def main() -> None:
                 finished_at=time.time(),
             )
 
-    # Cleanly close the database connection
+    # סגירה נקייה של חיבור ה-DB של ה-thread
     try:
         get_conn().close()
     except Exception:
         pass
-    log.info("Worker stopped.")
+    log.info("ה-worker נעצר.")
 
 
 if __name__ == "__main__":

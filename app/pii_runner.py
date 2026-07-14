@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Independent PII removal runner — run by .venv-pii/python (not the application's).
+"""רץ הסרת-PII עצמאי — מורץ ע"י הפייתון של .venv-pii (לא של האפליקציה).
 
-Imports only HebSafeHarbor and stdlib, to avoid conflicts with application dependencies
-(pydantic v2 and others). Reads JSON {"texts": [...]} from stdin, returns {"texts": [...]} to stdout.
-Loads the HebSafeHarbor engine once (the download is expensive).
+מייבא אך ורק את HebSafeHarbor ו-stdlib, כדי שלא ייגע בתלויות האפליקציה
+(pydantic v2 וכו'). קורא JSON {"texts": [...]} מ-stdin, מחזיר {"texts": [...]}
+מנוקה ל-stdout. טוען את מנוע HebSafeHarbor פעם אחת (הטעינה היקרה).
 
-Usage (by pii.py as a subprocess):
+שימוש (ע"י pii.py כתת-תהליך):
     .venv-pii/python app/pii_runner.py  < input.json  > output.json
 """
 
 import json
 import sys
 
-# Compatibility with Python 3.10+: HebSafeHarbor 0.1.1 uses `from collections import Set`,
-# alias removed in Python 3.10. Restore the aliases from collections.abc before import,
-# to support Python 3.10 (and 3.9/3.8). A more maintainable solution that doesn't touch library files.
+# תאימות Python 3.10+: HebSafeHarbor 0.1.1 משתמש ב-`from collections import Set`,
+# כינוי שהוסר ב-Python 3.10. משחזרים את הכינויים מ-collections.abc לפני הייבוא,
+# כדי לתמוך ב-Python 3.10 (וגם 3.9/3.8). פתרון רפרודוקטיבי שאינו נוגע בקובצי הספרייה.
 import collections
 import collections.abc as _abc
 
@@ -28,7 +28,7 @@ for _name in (
 
 
 def main() -> int:
-    # Read stdin as UTF-8 explicitly (not dependent on Windows/locale default encoding)
+    # קריאת stdin כ-UTF-8 במפורש (לא תלוי בקידוד ברירת המחדל של Windows/locale)
     try:
         raw = sys.stdin.buffer.read().decode("utf-8")
         data = json.loads(raw)
@@ -47,22 +47,22 @@ def main() -> int:
         print(f"hebsafeharbor not available: {exc}", file=sys.stderr)
         return 3
 
-    hsh = HebSafeHarbor()  # Load the model (he_ner_news_trf) — expensive, once
+    hsh = HebSafeHarbor()  # טעינת המודל (he_ner_news_trf) — יקר, פעם אחת
 
-    # HebSafeHarbor may fail on empty string — send a space and return empty.
+    # HebSafeHarbor עלול להיכשל על מחרוזת ריקה — נשלח רווח ונחזיר ריק חזרה.
     nonempty_idx = [i for i, t in enumerate(texts) if t and str(t).strip()]
     docs = [{"text": str(texts[i])} for i in nonempty_idx]
 
-    anon = list(texts)  # Default: empty values remain as is
+    anon = list(texts)  # ברירת מחדל: ערכים ריקים נשארים כפי שהם
     if docs:
         output = hsh(docs)
         for pos, out in zip(nonempty_idx, output):
             try:
                 anon[pos] = out.anonymized_text.text
-            except Exception:  # noqa: BLE001 — if something unexpected, prefer empty over original text
+            except Exception:  # noqa: BLE001 — אם משהו לא צפוי, עדיף ריק מאשר טקסט מקורי
                 anon[pos] = ""
 
-    # Write stdout as UTF-8 explicitly
+    # כתיבת stdout כ-UTF-8 במפורש
     sys.stdout.buffer.write(json.dumps({"texts": anon}, ensure_ascii=False).encode("utf-8"))
     sys.stdout.buffer.flush()
     return 0

@@ -1,7 +1,7 @@
-"""**API server + Web interface.**
+"""שרת ה-API + הגשת ממשק ה-Web.
 
-The API is lightweight: accepts uploads, manages the queue (SQLite), and serves the results.
-Heavy processing is done in the separate worker process (app/worker.py).
+ה-API קל-משקל: מקבל העלאות, מנהל את התור (SQLite), ומגיש את התוצאות.
+העיבוד הכבד מתבצע בתהליך ה-worker הנפרד (app/worker.py).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from urllib.parse import quote
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__
+from . import __version__, prompts_store
 from .config import get_settings
 from .db import (
     compute_stats,
@@ -61,7 +61,7 @@ app.add_middleware(
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 ALLOWED_EXT = {".mp4", ".m4a", ".mov", ".mkv", ".webm", ".mp3", ".wav", ".aac", ".avi"}
 
-# Create the schema on startup (idempotent) — not dependent on lifespan event
+# יצירת הסכימה בעליית התהליך (idempotent) — לא תלוי באירוע lifespan
 init_db()
 
 
@@ -88,7 +88,7 @@ async def upload_job(
     if ext not in ALLOWED_EXT:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {ext or '(no extension)'}. Supported: {', '.join(sorted(ALLOWED_EXT))}",
+            detail=f"סוג קובץ לא נתמך: {ext or '(ללא סיומת)'}. נתמכים: {', '.join(sorted(ALLOWED_EXT))}",
         )
 
     if num_speakers is not None and num_speakers <= 0:
@@ -96,7 +96,7 @@ async def upload_job(
 
     job_id = create_job(original_name=file.filename or "recording", num_speakers=num_speakers, language=language)
 
-    # Save the original file (always in .mp4 for consistency — ffmpeg identifies by content)
+    # שמירת הקובץ המקורי (תמיד בסיומת .mp4 לצורך אחידות — ה-ffmpeg מזהה לפי תוכן)
     dest = settings.uploads_dir / f"{job_id}.mp4"
     max_bytes = settings.max_upload_mb * 1024 * 1024
     written = 0
@@ -110,7 +110,7 @@ async def upload_job(
                     delete_job(job_id)
                     raise HTTPException(
                         status_code=413,
-                        detail=f"File too large ({settings.max_upload_mb}MB).",
+                        detail=f"הקובץ גדול מהמותר ({settings.max_upload_mb}MB).",
                     )
                 out.write(chunk)
     finally:
@@ -119,7 +119,7 @@ async def upload_job(
     if written == 0:
         dest.unlink(missing_ok=True)
         delete_job(job_id)
-        raise HTTPException(status_code=400, detail="Empty file received.")
+        raise HTTPException(status_code=400, detail="התקבל קובץ ריק.")
 
     return JobSummary.from_row(get_job(job_id))
 
@@ -133,7 +133,7 @@ def jobs() -> list[JobSummary]:
 def job_status(job_id: str) -> JobSummary:
     row = get_job(job_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(status_code=404, detail="משימה לא נמצאה")
     return JobSummary.from_row(row)
 
 
@@ -141,40 +141,40 @@ def job_status(job_id: str) -> JobSummary:
 def job_result(job_id: str) -> TranscriptResult:
     row = get_job(job_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(status_code=404, detail="משימה לא נמצאה")
     if row["status"] != "done":
-        raise HTTPException(status_code=409, detail=f"Job in '{row['status']}' state — no result yet")
+        raise HTTPException(status_code=409, detail=f"המשימה במצב '{row['status']}' — אין תוצאה עדיין")
     result = load_result(job_id)
     if result is None:
-        raise HTTPException(status_code=404, detail="Result file missing")
+        raise HTTPException(status_code=404, detail="קובץ התוצאה חסר")
     return TranscriptResult(**result)
 
 
 @app.put("/api/jobs/{job_id}/speakers", response_model=TranscriptResult)
 def rename_speakers(job_id: str, payload: SpeakerRename) -> TranscriptResult:
-    """Update speaker display names (e.g. 'Speaker 1' -> 'Advisor')."""
+    """עדכון שמות תצוגה לדוברים (למשל 'דובר 1' -> 'יועץ')."""
     result = load_result(job_id)
     if result is None:
-        raise HTTPException(status_code=404, detail="Result not found")
+        raise HTTPException(status_code=404, detail="תוצאה לא נמצאה")
     for sid, name in payload.speakers.items():
         if sid in result["speakers"] and name.strip():
             result["speakers"][sid] = name.strip()
     save_result(job_id, result)
-    index_job_segments(job_id, result)  # Re-index the search with the updated names
+    index_job_segments(job_id, result)  # רענון אינדקס החיפוש עם השמות המעודכנים
     return TranscriptResult(**result)
 
 
 @app.post("/api/jobs/{job_id}/summarize", response_model=TranscriptResult)
 def summarize_job(job_id: str) -> TranscriptResult:
-    """Create/update the summary, client summary, and advisor feedback using the local language model."""
+    """יצירה/רענון של הסיכום, סיכום ללקוח ומשוב ליועץ באמצעות מודל השפה המקומי."""
     result = load_result(job_id)
     if result is None:
-        raise HTTPException(status_code=404, detail="Result not found")
+        raise HTTPException(status_code=404, detail="תוצאה לא נמצאה")
     try:
         result["summary"] = summarize(settings, result)
     except LLMError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    # Puah-specific outputs — best-effort (if one fails, still return the rest)
+    # תוצרי פוע"ה — best-effort (אם אחד נכשל, עדיין מחזירים את השאר)
     if settings.client_summary_enabled:
         try:
             result["client_summary"] = generate_client_summary(settings, result)
@@ -191,7 +191,7 @@ def summarize_job(job_id: str) -> TranscriptResult:
 
 @app.get("/api/export/feedback.xlsx")
 def export_feedback_xlsx() -> Response:
-    """Export Excel attachment: for each recording — name, client summary, feedback (like feedback_calls.xlsx)."""
+    """ייצוא Excel מצרפי: לכל הקלטה — שם, סיכום ללקוח, משוב (כמו משוב_שיחות.xlsx)."""
     import io
 
     import openpyxl
@@ -199,9 +199,9 @@ def export_feedback_xlsx() -> Response:
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Feedback calls"
+    ws.title = "משוב שיחות"
     ws.sheet_view.rightToLeft = True
-    ws.append(["name of the record", "Client summary", "Feedback"])
+    ws.append(["name of the record", "סיכום ללקוח", "משוב"])
     for c in ws[1]:
         c.font = Font(bold=True)
     ws.column_dimensions["A"].width = 32
@@ -230,13 +230,13 @@ def export_feedback_xlsx() -> Response:
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers=_content_disposition("feedback_calls.xlsx"),
+        headers=_content_disposition("משוב_שיחות.xlsx"),
     )
 
 
 @app.get("/api/llm/status")
 def llm_status() -> dict:
-    """Check language model server availability (short call)."""
+    """בדיקת זמינות שרת מודל השפה (קריאה קצרה)."""
     if not settings.summary_enabled:
         return {"enabled": False, "available": False, "model": settings.llm_model}
     return {
@@ -247,9 +247,95 @@ def llm_status() -> dict:
     }
 
 
+# ---------- עריכת פרומפטים (סיכומים) ----------
+
+@app.get("/api/prompts")
+def get_prompts() -> dict:
+    """מחזיר את כל הפרומפטים הניתנים לעריכה (ערך פעיל + ברירת מחדל)."""
+    return {"prompts": prompts_store.all_prompts()}
+
+
+@app.put("/api/prompts")
+def update_prompts(payload: dict) -> dict:
+    """שמירת עריכות פרומפטים. גוף: {key: value, ...}."""
+    updates = payload.get("prompts", payload)
+    if not isinstance(updates, dict):
+        raise HTTPException(status_code=400, detail="פורמט לא תקין")
+    prompts_store.save({k: v for k, v in updates.items() if isinstance(v, str)})
+    return {"prompts": prompts_store.all_prompts()}
+
+
+@app.post("/api/prompts/reset")
+def reset_prompts(key: str | None = None) -> dict:
+    """שחזור לברירת מחדל — פרומפט בודד (key=...) או הכול."""
+    prompts_store.reset(key)
+    return {"prompts": prompts_store.all_prompts()}
+
+
+# ---------- לוגואים (מיתוג) ----------
+
+_BRAND_SIDES = {"right", "left"}
+_IMG_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+}
+
+
+def _brand_dir() -> Path:
+    d = settings.data_dir / "branding"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _brand_file(side: str) -> Path | None:
+    for f in _brand_dir().glob(f"{side}.*"):
+        return f
+    return None
+
+
+@app.get("/api/branding")
+def branding_status() -> dict:
+    """אילו לוגואים מוגדרים."""
+    return {"right": _brand_file("right") is not None, "left": _brand_file("left") is not None}
+
+
+@app.get("/api/branding/{side}")
+def get_logo(side: str) -> FileResponse:
+    if side not in _BRAND_SIDES:
+        raise HTTPException(status_code=404, detail="צד לא תקין")
+    f = _brand_file(side)
+    if not f:
+        raise HTTPException(status_code=404, detail="לוגו לא הוגדר")
+    return FileResponse(f, media_type=_IMG_MIME.get(f.suffix.lower(), "application/octet-stream"))
+
+
+@app.post("/api/branding/{side}")
+async def set_logo(side: str, file: UploadFile = File(...)) -> dict:
+    if side not in _BRAND_SIDES:
+        raise HTTPException(status_code=404, detail="צד לא תקין")
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _IMG_MIME:
+        raise HTTPException(status_code=400, detail=f"סוג תמונה לא נתמך: {ext or '?'}")
+    for old in _brand_dir().glob(f"{side}.*"):
+        old.unlink(missing_ok=True)
+    dest = _brand_dir() / f"{side}{ext}"
+    with dest.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    return {"ok": True, "side": side}
+
+
+@app.delete("/api/branding/{side}", status_code=204)
+def delete_logo(side: str) -> Response:
+    if side not in _BRAND_SIDES:
+        raise HTTPException(status_code=404, detail="צד לא תקין")
+    for f in _brand_dir().glob(f"{side}.*"):
+        f.unlink(missing_ok=True)
+    return Response(status_code=204)
+
+
 @app.get("/api/stats")
 def stats() -> dict:
-    """Dashboard stats: counts from DB + keywords/topics from merged result files."""
+    """סטטיסטיקות לדשבורד: אגרגציות מה-DB + מילות מפתח וכיסוי סיכום/PII מקובצי התוצאה."""
     from collections import Counter
 
     s = compute_stats()
@@ -282,7 +368,7 @@ def stats() -> dict:
 
 @app.get("/api/search", response_model=SearchResponse)
 def search(q: str = "", limit: int = 100) -> SearchResponse:
-    """Full search across all recordings. Returns matching segments with timestamp and speaker."""
+    """חיפוש מלא בכל התמלולים. מחזיר קטעים תואמים עם חותמת זמן ודובר."""
     q = q.strip()
     if not q:
         return SearchResponse(query=q, count=0, matches=[])
@@ -297,12 +383,12 @@ _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 def _download_name(job_id: str, suffix: str, ext: str) -> str:
     row = get_job(job_id)
     base = (row.get("original_name") if row else None) or f"transcript-{job_id}"
-    base = base.rsplit(".", 1)[0]  # Remove the original extension (mp4, etc.)
+    base = base.rsplit(".", 1)[0]  # הסרת סיומת המקור (mp4 וכו')
     return f"{base}{suffix}.{ext}"
 
 
 def _content_disposition(filename: str) -> dict[str, str]:
-    """Content-Disposition header safe for Hebrew names (RFC 5987 + fallback ASCII)."""
+    """כותרת Content-Disposition בטוחה לשמות עבריים (RFC 5987 + fallback ASCII)."""
     base, _, ext = filename.rpartition(".")
     base = base or filename
     ext = ext or "dat"
@@ -316,7 +402,7 @@ def export(job_id: str, format: str = "txt") -> Response:
     fmt = format.lower()
     result = load_result(job_id)
     if result is None:
-        raise HTTPException(status_code=404, detail="Result not found")
+        raise HTTPException(status_code=404, detail="תוצאה לא נמצאה")
 
     if fmt == "docx":
         content = build_docx_bytes(result, title=_download_name(job_id, "", "").rstrip("."))
@@ -327,7 +413,7 @@ def export(job_id: str, format: str = "txt") -> Response:
         )
 
     if fmt not in EXPORTERS:
-        raise HTTPException(status_code=400, detail=f"Format not supported: {fmt}")
+        raise HTTPException(status_code=400, detail=f"פורמט לא נתמך: {fmt}")
     media_type, fn = EXPORTERS[fmt]
     return Response(
         content=fn(result),
@@ -338,11 +424,11 @@ def export(job_id: str, format: str = "txt") -> Response:
 
 @app.get("/api/jobs/{job_id}/pii")
 def export_pii(job_id: str, format: str = "json") -> Response:
-    """Download the PII-redacted version (json/docx)."""
+    """הורדת הגרסה שעברה הסרת PII (json/docx)."""
     fmt = format.lower()
     pii_json = settings.results_dir / f"{job_id}.pii.json"
     if not pii_json.exists():
-        raise HTTPException(status_code=404, detail="PII version not found (maybe PII removal was skipped)")
+        raise HTTPException(status_code=404, detail="גרסת PII לא נמצאה (אולי הסרת ה-PII דולגה)")
 
     if fmt == "json":
         return FileResponse(
@@ -354,7 +440,7 @@ def export_pii(job_id: str, format: str = "json") -> Response:
         pii_docx = settings.results_dir / f"{job_id}.pii.docx"
         if pii_docx.exists():
             return FileResponse(pii_docx, media_type=_DOCX_MIME, filename=_download_name(job_id, ".pii", "docx"))
-        # Build from JSON if the docx file is missing
+        # נבנה מה-JSON אם קובץ ה-docx חסר
         import json as _json
 
         content = build_docx_bytes(
@@ -367,15 +453,15 @@ def export_pii(job_id: str, format: str = "json") -> Response:
             media_type=_DOCX_MIME,
             headers=_content_disposition(_download_name(job_id, ".pii", "docx")),
         )
-    raise HTTPException(status_code=400, detail=f"Format not supported: {fmt}")
+    raise HTTPException(status_code=400, detail=f"פורמט לא נתמך: {fmt}")
 
 
 @app.get("/api/jobs/{job_id}/media")
 def media(job_id: str) -> FileResponse:
-    """Download the original file for playback (supports range requests)."""
+    """הגשת קובץ המקור לצורך נגן בממשק (תומך ב-range requests)."""
     path = settings.uploads_dir / f"{job_id}.mp4"
     if not path.exists():
-        raise HTTPException(status_code=404, detail="Original file not found")
+        raise HTTPException(status_code=404, detail="קובץ מקור לא נמצא")
     return FileResponse(path, media_type="video/mp4")
 
 
@@ -383,7 +469,7 @@ def media(job_id: str) -> FileResponse:
 def remove_job(job_id: str) -> Response:
     row = get_job(job_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(status_code=404, detail="משימה לא נמצאה")
     (settings.uploads_dir / f"{job_id}.mp4").unlink(missing_ok=True)
     (settings.audio_dir / f"{job_id}.wav").unlink(missing_ok=True)
     result_path(job_id).unlink(missing_ok=True)
@@ -393,7 +479,7 @@ def remove_job(job_id: str) -> Response:
     return Response(status_code=204)
 
 
-# ---------- Web interface ----------
+# ---------- הגשת ממשק ה-Web ----------
 
 @app.get("/")
 def index() -> FileResponse:

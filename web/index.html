@@ -8,21 +8,26 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">
-      <div class="logo">פ</div>
-      <div>
-        <h1>מערכת תמלול וזיהוי דוברים</h1>
-        <p class="sub">מכון פוע"ה · עיבוד מקומי מאובטח (On-Prem)</p>
+    <div class="topbar-start">
+      <img id="logoRight" class="brand-logo hidden" alt="לוגו ימין" />
+      <div class="brand">
+        <div class="logo" id="brandMark">פ</div>
+        <div>
+          <h1>מערכת תמלול וזיהוי דוברים</h1>
+          <p class="sub">מכון פוע"ה · עיבוד מקומי מאובטח (On-Prem)</p>
+        </div>
       </div>
     </div>
     <div class="topbar-right">
       <button id="dashBtn" class="btn ghost dash-btn">📊 דשבורד</button>
-      <div class="health" id="health">בודק חיבור…</div>
+      <button id="settingsBtn" class="btn ghost dash-btn">⚙ הגדרות</button>
+      <div class="health hidden" id="health"></div>
+      <img id="logoLeft" class="brand-logo hidden" alt="לוגו שמאל" />
     </div>
   </header>
 
   <main class="layout">
-    <!-- Right: Upload + job list -->
+    <!-- צד ימין: העלאה + רשימת משימות -->
     <section class="sidebar">
       <div class="card upload-card">
         <h2>העלאת הקלטה</h2>
@@ -71,7 +76,7 @@
       </div>
     </section>
 
-    <!-- Left: Transcript view -->
+    <!-- צד שמאל: תצוגת תמלול -->
     <section class="content">
       <div id="emptyState" class="empty">
         <div class="empty-icon">🎙️</div>
@@ -105,6 +110,43 @@
             <h3>נושאים נפוצים</h3>
             <div id="chartTopics" class="kw-cloud"></div>
           </div>
+        </div>
+      </div>
+
+      <div id="settingsView" class="dashboard hidden">
+        <div class="dash-head"><h2>⚙ הגדרות</h2></div>
+
+        <div class="dash-card wide">
+          <h3>לוגואים בכותרת</h3>
+          <div class="logo-manager">
+            <div class="logo-editor">
+              <span class="le-title">לוגו ימין</span>
+              <div id="logoRightPreview" class="logo-preview"></div>
+              <input type="file" id="logoRightInput" accept="image/*" hidden />
+              <div class="le-btns">
+                <button class="btn ghost" data-logo="right" data-act="upload">העלה / החלף</button>
+                <button class="btn ghost" data-logo="right" data-act="remove">הסר</button>
+              </div>
+            </div>
+            <div class="logo-editor">
+              <span class="le-title">לוגו שמאל</span>
+              <div id="logoLeftPreview" class="logo-preview"></div>
+              <input type="file" id="logoLeftInput" accept="image/*" hidden />
+              <div class="le-btns">
+                <button class="btn ghost" data-logo="left" data-act="upload">העלה / החלף</button>
+                <button class="btn ghost" data-logo="left" data-act="remove">הסר</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dash-card wide">
+          <div class="pc-head">
+            <h3>System Prompts של הסיכומים</h3>
+            <button id="promptsResetAll" class="btn ghost">שחזר הכול לברירת מחדל</button>
+          </div>
+          <p class="dash-empty">עריכת הפרומפטים שמפיקים את הסיכום, סיכום-הלקוח והמשוב. שינויים חלים על עבודות חדשות ועל "צור סיכום".</p>
+          <div id="promptsEditor"></div>
         </div>
       </div>
 

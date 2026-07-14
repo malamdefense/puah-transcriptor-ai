@@ -1,7 +1,7 @@
-"""Speaker diarization using pyannote.audio.
+"""זיהוי דוברים (speaker diarization) באמצעות pyannote.audio.
 
-The gated model in HuggingFace — requires approval of the usage terms once and create a token.
-See instructions in README.
+המודל gated ב-HuggingFace — נדרש לאשר את תנאי השימוש פעם אחת וליצור טוקן.
+ראו הוראות ב-README.
 """
 
 from __future__ import annotations
@@ -12,7 +12,8 @@ from typing import Optional
 
 from ..config import Settings
 
-# torchcodec failed to load on Windows (missing DLLs of FFmpeg in shared version), and we bypass it entirely — loading the WAV into memory with soundfile. We suppress the annoying warning (not a failure).
+# torchcodec נכשל בטעינה ב-Windows (חסרים DLLs של FFmpeg בגרסת shared), ואנחנו עוקפים
+# אותו לגמרי — טוענים את ה-WAV לזיכרון עם soundfile. משתיקים את האזהרה הרועשת (לא כשל).
 warnings.filterwarnings("ignore", message=r"(?s).*torchcodec.*")
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pyannote\.audio\.core\.io")
 
@@ -22,7 +23,7 @@ class DiarizationError(RuntimeError):
 
 
 class Diarizer:
-    """Wraps the diarization pipeline of pyannote. Loads lazily and stays in memory."""
+    """עוטף את pipeline הזיהוי של pyannote. נטען עצלן ונשאר תושב בזיכרון."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -35,17 +36,17 @@ class Diarizer:
             from pyannote.audio import Pipeline  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover
             raise DiarizationError(
-                "pyannote.audio is not installed. Run: pip install pyannote.audio"
+                "pyannote.audio אינו מותקן. הריצו: pip install pyannote.audio"
             ) from exc
 
         if not self.settings.hf_token:
             raise DiarizationError(
-                "Missing HuggingFace token (PUAH_HF_TOKEN). Please approve the usage terms of "
-                f"'{self.settings.diarization_model}' and 'pyannote/segmentation-3.0' "
-                "in HuggingFace and create a token. See README."
+                "חסר טוקן HuggingFace (PUAH_HF_TOKEN). יש לאשר את תנאי השימוש של "
+                f"'{self.settings.diarization_model}' ושל 'pyannote/segmentation-3.0' "
+                "ב-HuggingFace וליצור טוקן קריאה. ראו README."
             )
 
-        # pyannote.audio newer uses token=; older uses use_auth_token=. Both are supported.
+        # pyannote.audio החדש משתמש ב-token=; ישן יותר ב-use_auth_token=. תומכים בשניהם.
         try:
             pipeline = Pipeline.from_pretrained(
                 self.settings.diarization_model, token=self.settings.hf_token
@@ -56,10 +57,10 @@ class Diarizer:
             )
         if pipeline is None:
             raise DiarizationError(
-                "Model loading failed — verify that you approved the usage terms and that PUAH_HF_TOKEN is valid."
+                "טעינת מודל הזיהוי נכשלה — ודאו שאישרתם את תנאי השימוש וש-PUAH_HF_TOKEN תקין."
             )
 
-        # Transfer to GPU if available
+        # העברה ל-GPU אם זמין
         try:
             import torch  # noqa: PLC0415
 
@@ -75,9 +76,9 @@ class Diarizer:
         audio_path: Path,
         num_speakers: Optional[int] = None,
     ) -> list[dict]:
-        """Returns a list of speech turns: {start, end, speaker}.
+        """מחזיר רשימת תורות דיבור: {start, end, speaker}.
 
-        num_speakers — hint for number of speakers (None = automatic diarization).
+        num_speakers — רמז מספר הדוברים (None = זיהוי אוטומטי).
         """
         self.load()
         assert self._pipeline is not None
@@ -91,11 +92,11 @@ class Diarizer:
 
     @staticmethod
     def _load_audio(audio_path: Path):
-        """Loads the WAV into memory and returns a dict for pyannote, bypassing torchcodec.
+        """טוען את ה-WAV לזיכרון ומחזיר dict ל-pyannote, לעקיפת torchcodec.
 
-        torchcodec (dependency of pyannote) failed to load on Windows when there are no DLLs of FFmpeg in shared version.
-        We already extract WAV with ffmpeg, and soundfile reads it directly (libsndfile, without FFmpeg).
-        If soundfile is not available — fallback to the file path.
+        torchcodec (תלות של pyannote) נכשל בטעינה ב-Windows כשאין DLLs של FFmpeg
+        בגרסת shared. אנחנו כבר מחלצים WAV עם ffmpeg, ו-soundfile קורא אותו ישירות
+        (libsndfile, ללא FFmpeg). אם soundfile לא זמין — נופלים חזרה לנתיב הקובץ.
         """
         try:
             import soundfile as sf  # noqa: PLC0415
@@ -109,7 +110,7 @@ class Diarizer:
 
     @staticmethod
     def _collect(output) -> list[dict]:
-        # pyannote older returns Annotation directly; newer returns DiarizeOutput with .speaker_diarization
+        # pyannote ישן מחזיר Annotation ישירות; חדש מחזיר DiarizeOutput עם .speaker_diarization
         annotation = output
         if not hasattr(annotation, "itertracks"):
             for attr in ("speaker_diarization", "diarization", "annotation"):
@@ -119,7 +120,7 @@ class Diarizer:
                     break
         if not hasattr(annotation, "itertracks"):
             raise DiarizationError(
-                f"Unknown diarization output: {type(output).__name__} (no itertracks)"
+                f"פלט זיהוי דוברים בלתי מוכר: {type(output).__name__} (אין itertracks)"
             )
 
         turns: list[dict] = []

@@ -1,7 +1,7 @@
-"""**Transcription and speaker diarization system for PUAH.**
+"""מערכת תמלול וזיהוי דוברים בעברית — מכון פוע"ה.
 
-Eco System for mp4 input, transcription in Hebrew and speaker diarization (diarization),
-all running On-Prem without sending data outside.
+Eco System לקבלת הקלטות mp4, תמלול בעברית וזיהוי דוברים (diarization),
+כולה רצה On-Prem ללא שליחת נתונים החוצה.
 """
 
 __version__ = "1.0.0"

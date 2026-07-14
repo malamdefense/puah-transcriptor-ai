@@ -1,7 +1,7 @@
-"""**Database access layer (SQLite).**
+"""שכבת גישה למסד הנתונים (SQLite).
 
-SQLite chosen deliberately: On-Prem deployment on a single server, no external broker service needed.
-WAL mode allows concurrent reads (API) while writes (worker) are blocked.
+SQLite נבחר במכוון: פריסת On-Prem על שרת בודד, ללא צורך בשירות broker חיצוני.
+מצב WAL מאפשר קריאה (ה-API) במקביל לכתיבה (ה-worker).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     status        TEXT NOT NULL,        -- queued | processing | done | error
     stage         TEXT,                 -- extracting_audio | transcribing | diarizing | merging
     progress      REAL NOT NULL DEFAULT 0,
-    num_speakers  INTEGER,              -- Hint for the number of speakers (NULL = automatic)
+    num_speakers  INTEGER,              -- רמז למספר דוברים (NULL = אוטומטי)
     language      TEXT NOT NULL DEFAULT 'he',
     duration_sec  REAL,
     error         TEXT,
@@ -38,9 +38,9 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs (status, created_at);
 
--- Full-text search index on transcription segments.
--- tokenize=trigram allows substring search — critical for Hebrew with prefixes (ה/ו/ב/ל/מ/ש)
--- tokenized: searching "counseling" finds "counseling", "pearls" finds "pearls", etc.
+-- אינדקס חיפוש מלא על קטעי התמלול.
+-- tokenize=trigram מאפשר חיפוש תת-מחרוזת — קריטי לעברית, שבה תחיליות (ה/ו/ב/ל/מ/ש)
+-- נצמדות למילה: חיפוש "ייעוץ" מוצא גם "הייעוץ", "פוריות" מוצא "לפוריות" וכו'.
 CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
     job_id UNINDEXED,
     seg_index UNINDEXED,
@@ -63,7 +63,7 @@ def _connect() -> sqlite3.Connection:
 
 
 def get_conn() -> sqlite3.Connection:
-    """Thread-local connection (sqlite does not allow sharing between threads)."""
+    """חיבור פר-thread (sqlite אינו מאפשר שיתוף חיבור בין threads)."""
     conn = getattr(_local, "conn", None)
     if conn is None:
         conn = _connect()
@@ -111,9 +111,9 @@ def update_job(job_id: str, **fields: Any) -> None:
 
 
 def claim_next_job() -> Optional[dict[str, Any]]:
-    """Atomically claims the oldest queued job and marks it as processing.
+    """תופס באופן אטומי את המשימה הממתינה הוותיקה ביותר ומסמן אותה כ-processing.
 
-    BEGIN IMMEDIATE blocks writes so two workers cannot claim the same job.
+    BEGIN IMMEDIATE נועל את הכתיבה כך ששני workers לא יתפסו את אותה משימה.
     """
     conn = get_conn()
     try:
@@ -141,7 +141,7 @@ def claim_next_job() -> Optional[dict[str, Any]]:
 
 
 def reset_stuck_jobs() -> int:
-    """Returns jobs stuck in processing (e.g. after worker crash) to queued."""
+    """מחזיר ל-queued משימות שנתקעו ב-processing (לדוגמה לאחר קריסת worker)."""
     cur = get_conn().execute(
         "UPDATE jobs SET status='queued', stage=NULL, progress=0, started_at=NULL "
         "WHERE status='processing'"
@@ -155,10 +155,10 @@ def delete_job(job_id: str) -> None:
     conn.execute("DELETE FROM segments_fts WHERE job_id = ?", (job_id,))
 
 
-# --- Full-text search (FTS5) ---
+# --- חיפוש מלא (FTS5) ---
 
 def index_job_segments(job_id: str, result: dict[str, Any]) -> None:
-    """Re-indexes the transcription segments for search (keeps speaker display name)."""
+    """מאנדקס מחדש את קטעי התמלול של משימה לחיפוש (שומר את שם התצוגה של הדובר)."""
     conn = get_conn()
     conn.execute("DELETE FROM segments_fts WHERE job_id = ?", (job_id,))
     speakers = result.get("speakers", {})
@@ -181,9 +181,9 @@ def index_job_segments(job_id: str, result: dict[str, Any]) -> None:
 
 
 def _fts_match(query: str) -> Optional[str]:
-    """Builds FTS5 query (trigram): every word >=3 chars as substring, connected by AND.
+    """בונה שאילתת FTS5 (trigram): כל מילה באורך >=3 כתת-מחרוזת, בחיבור AND.
 
-    Returns None if no word >=3 chars (trigram requires at least 3 chars) — then falls back to LIKE.
+    מחזיר None אם אין מילה באורך 3+ (trigram דורש לפחות 3 תווים) — אז נופלים ל-LIKE.
     """
     tokens = [t for t in re.findall(r"\w+", query, flags=re.UNICODE) if len(t) >= 3]
     if not tokens:
@@ -210,7 +210,7 @@ def search_segments(query: str, limit: int = 100) -> list[dict[str, Any]]:
             (match, limit),
         ).fetchall()
     else:
-        # Short query <3 chars — direct substring search
+        # שאילתה קצרה מ-3 תווים — חיפוש תת-מחרוזת ישיר
         like = f"%{q}%"
         rows = conn.execute(
             _SEARCH_SELECT + "WHERE s.text LIKE ? OR s.speaker LIKE ? ORDER BY s.start LIMIT ?",
@@ -219,10 +219,10 @@ def search_segments(query: str, limit: int = 100) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-# --- Dashboard
+# --- סטטיסטיקות לדשבורד ---
 
 def compute_stats() -> dict[str, Any]:
-    """Quick stats from jobs table and FTS index (without loading result files)."""
+    """אגרגציות מהירות מטבלת ה-jobs ומאינדקס החיפוש (ללא קריאת קובצי תוצאה)."""
     conn = get_conn()
     by_status = {
         r["status"]: r["c"]
@@ -263,7 +263,7 @@ def compute_stats() -> dict[str, Any]:
     }
 
 
-# --- Saving results (JSON file per job) ---
+# --- אחסון תוצאות (קובץ JSON לכל משימה) ---
 
 def result_path(job_id: str) -> Path:
     return get_settings().results_dir / f"{job_id}.json"

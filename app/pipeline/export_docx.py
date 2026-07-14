@@ -1,4 +1,4 @@
-"""Export the transcript to a Word document (.docx) with right-to-left (Hebrew) layout."""
+"""ייצוא התמלול למסמך Word‏ (.docx) עם פריסה מימין-לשמאל (עברית)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .export import _fmt_clock, _speaker_name
 
 
 def _rtl(paragraph) -> None:
-    """Converts a paragraph to RTL and aligns it to the right (suitable for Hebrew in Word)."""
+    """הופך פסקה ל-RTL ומיישר לימין (תקין לעברית ב-Word)."""
     pPr = paragraph._p.get_or_add_pPr()
     bidi = OxmlElement("w:bidi")
     bidi.set(qn("w:val"), "1")
@@ -53,52 +53,52 @@ def _bullets(doc, items: list[str]) -> None:
 def _build_document(result: dict[str, Any], title: str, deidentified: bool) -> "Document":
     doc = Document()
 
-    heading = doc.add_heading(title or "Transcript", level=0)
+    heading = doc.add_heading(title or "תמלול", level=0)
     _rtl(heading)
 
     if deidentified:
-        note = _add(doc, "⚠ This document has been deidentified (PII)", bold=True)
+        note = _add(doc, "⚠ מסמך זה עבר הסרת פרטים מזהים (PII)", bold=True)
         note.runs[0].font.size = Pt(11)
 
     dur = _fmt_clock(result.get("duration_sec", 0.0))
     n_spk = result.get("num_speakers", len(result.get("speakers", {})))
-    _add(doc, f"Duration: {dur}  ·  Speakers: {n_spk}  ·  Language: {result.get('language', 'he')}", size=10)
+    _add(doc, f"משך: {dur}  ·  דוברים: {n_spk}  ·  שפה: {result.get('language', 'he')}", size=10)
 
-    # Summary
+    # סיכום
     summ = result.get("summary")
     if summ and (summ.get("summary") or summ.get("key_points")):
-        _add(doc, "Automatic summary", bold=True, size=14)
+        _add(doc, "סיכום אוטומטי", bold=True, size=14)
         if summ.get("summary"):
             _add(doc, summ["summary"])
         if summ.get("key_points"):
-            _add(doc, "Key points:", bold=True)
+            _add(doc, "נקודות עיקריות:", bold=True)
             _bullets(doc, summ["key_points"])
         if summ.get("action_items"):
-            _add(doc, "Action items and next steps:", bold=True)
+            _add(doc, "פעולות והמשך טיפול:", bold=True)
             _bullets(doc, summ["action_items"])
         if summ.get("topics"):
-            _add(doc, "Topics: " + " · ".join(summ["topics"]))
+            _add(doc, "נושאים: " + " · ".join(summ["topics"]))
         if summ.get("keywords"):
-            _add(doc, "Keywords: " + " · ".join(summ["keywords"]))
+            _add(doc, "מילות מפתח: " + " · ".join(summ["keywords"]))
 
-    # Client summary (internal)
+    # סיכום ללקוח (פוע"ה)
     cs = result.get("client_summary")
     if cs:
-        _add(doc, "Client summary", bold=True, size=14)
+        _add(doc, "סיכום ללקוח", bold=True, size=14)
         for para in str(cs).split("\n"):
             if para.strip():
                 _add(doc, para)
 
-    # Feedback to consultant (internal)
+    # משוב ליועץ (פנימי)
     fb = result.get("feedback")
     if fb:
-        _add(doc, "Feedback to consultant (internal)", bold=True, size=14)
+        _add(doc, "משוב ליועץ (פנימי)", bold=True, size=14)
         for para in str(fb).split("\n"):
             if para.strip():
                 _add(doc, para)
 
-    # Transcript
-    _add(doc, "Transcript", bold=True, size=14)
+    # תמלול
+    _add(doc, "תמלול", bold=True, size=14)
     for seg in result.get("segments", []):
         name = _speaker_name(result, seg["speaker"])
         p = doc.add_paragraph()
@@ -118,7 +118,7 @@ def build_docx(
     title: str,
     deidentified: bool = False,
 ) -> Path:
-    """Builds a Word document from the transcript and saves it to path. Returns the path."""
+    """בונה מסמך Word מתמלול ושומר ל-path. מחזיר את הנתיב."""
     doc = _build_document(result, title, deidentified)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,7 +127,7 @@ def build_docx(
 
 
 def build_docx_bytes(result: dict[str, Any], title: str, deidentified: bool = False) -> bytes:
-    """Builds a Word document and returns its bytes (for direct download)."""
+    """בונה מסמך Word ומחזיר את תוכנו כ-bytes (להורדה ישירה)."""
     import io
 
     doc = _build_document(result, title, deidentified)

@@ -1,10 +1,10 @@
-"""Deidentify PII from transcript, using HebSafeHarbor.
+"""הסרת פרטים מזהים (PII) מתמלול, באמצעות HebSafeHarbor.
 
-HebSafeHarbor requires pydantic<2 / spaCy 3.2 that conflicts with the application (pydantic v2),
-therefore it is installed in a virtual environment (.venv-pii by default) and called as a subprocess
-through app/pii_runner.py. This way we get the capability without breaking the rest of the system.
+HebSafeHarbor דורש pydantic<2 / spaCy 3.2 שמתנגשים עם האפליקציה (pydantic v2),
+לכן הוא מותקן בסביבה וירטואלית מבודדת (ברירת מחדל: .venv-pii) ונקרא כתת-תהליך
+דרך app/pii_runner.py. כך אנו מקבלים את היכולת בלי לשבור את שאר המערכת.
 
-deidentify_result returns a new copy of the transcript with the segments and summary cleaned.
+deidentify_result מחזיר עותק חדש של התמלול שבו טקסט הקטעים והסיכום עברו ניקוי.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any
 
 from ..config import Settings
 
-# Root of the repository: app/pipeline/pii.py -> pipeline -> app -> root
+# שורש הריפו: app/pipeline/pii.py -> pipeline -> app -> root
 ROOT = Path(__file__).resolve().parent.parent.parent
 RUNNER = ROOT / "app" / "pii_runner.py"
 
@@ -40,7 +40,7 @@ def _run_pii(settings: Settings, texts: list[str]) -> list[str]:
     py = pii_python(settings)
     if not py.exists():
         raise PIIError(
-            f"PII environment not found ({py}). Run: python rebuild.py (or create {settings.pii_venv} "
+            f"סביבת ה-PII לא נמצאה ({py}). הריצו: python rebuild.py (או הקימו את {settings.pii_venv} "
             "מ-requirements-pii.txt)."
         )
     try:
@@ -53,27 +53,27 @@ def _run_pii(settings: Settings, texts: list[str]) -> list[str]:
             timeout=settings.pii_timeout_sec,
         )
     except subprocess.TimeoutExpired as exc:
-        raise PIIError(f"PII timed out ({settings.pii_timeout_sec}s)") from exc
+        raise PIIError(f"הסרת ה-PII חרגה מזמן הקצוב ({settings.pii_timeout_sec}s)") from exc
 
     if proc.returncode != 0:
         tail = (proc.stderr or "").strip()[-600:]
-        raise PIIError(f"PII failed (code {proc.returncode}): {tail}")
+        raise PIIError(f"רץ ה-PII נכשל (קוד {proc.returncode}): {tail}")
 
     try:
         result = json.loads(proc.stdout)
         out = result["texts"]
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise PIIError(f"Unexpected output from PII: {exc}") from exc
+        raise PIIError(f"פלט בלתי צפוי מרץ ה-PII: {exc}") from exc
 
     if len(out) != len(texts):
-        raise PIIError("Number of segments returned from PII does not match the input")
+        raise PIIError("מספר הקטעים שחזרו מרץ ה-PII אינו תואם לקלט")
     return out
 
 
 def deidentify_result(settings: Settings, result: dict[str, Any]) -> dict[str, Any]:
-    """Returns a new copy of the transcript with the segments and summary cleaned.
+    """מחזיר עותק חדש של התמלול שעבר הסרת PII (קטעים + סיכום).
 
-    Performs a single subprocess call for all the texts together (to load the model once).
+    מבצע קריאת subprocess *אחת* לכל הטקסטים יחד (כדי לטעון את המודל פעם אחת בלבד).
     """
     segments = result.get("segments", [])
     seg_texts = [s.get("text", "") for s in segments]
@@ -95,7 +95,7 @@ def deidentify_result(settings: Settings, result: dict[str, Any]) -> dict[str, A
 
     flat = seg_texts + sum_summary + sum_keypts + sum_actions + sum_topics + sum_keywords + extra
     if not any(t and str(t).strip() for t in flat):
-        raise PIIError("Transcript is empty — nothing to clean.")
+        raise PIIError("התמלול ריק — אין מה לנקות.")
 
     anon = _run_pii(settings, flat)
 

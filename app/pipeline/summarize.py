@@ -1,16 +1,10 @@
-"""**Automatic conversation summarization using a local language model (OpenAI-compatible interface).**
+"""סיכום אוטומטי של שיחה באמצעות מודל שפה מקומי (ממשק תואם OpenAI).
 
-Works with Ollama / vLLM / LM Studio — any server that exposes a local `/v1/chat/completions` endpoint.  
-No data leaves the server.
+עובד מול Ollama / vLLM / LM Studio — כל שרת שחושף /v1/chat/completions מקומית.
+שום נתון אינו יוצא מהשרת. השיחות ארוכות לעיתים, לכן ממומשת סכימת map-reduce:
+מסכמים כל קטע בנפרד ואז מאחדים לסיכום מובנה אחד.
 
-Since conversations can be long, a **map-reduce strategy** is used:  
-each segment is summarized individually and then combined into a single structured summary.
-
-**Output:**
-
-```json
-{ "summary", "key_points", "action_items", "topics", "keywords" }
-```
+הפלט: {summary, key_points, action_items, topics, keywords}.
 """
 
 from __future__ import annotations
@@ -28,7 +22,7 @@ class LLMError(RuntimeError):
     pass
 
 
-# ---------- LLM client (urllib, no external dependencies) ----------
+# ---------- לקוח LLM (urllib, ללא תלות חיצונית) ----------
 
 def _post_json(settings: Settings, url: str, payload: dict, auth: bool = False) -> dict:
     headers = {"Content-Type": "application/json"}
@@ -49,11 +43,11 @@ def _post_json(settings: Settings, url: str, payload: dict, auth: bool = False) 
         raise LLMError(f"שגיאת HTTP ממודל השפה ({exc.code}): {body}") from exc
     except urllib.error.URLError as exc:
         raise LLMError(
-            f"Cannot reach the language model at {settings.llm_base_url} ({exc}). "
-            "Ensure Ollama/local server is running and the model is downloaded (ollama pull)."
+            f"לא ניתן להגיע למודל השפה ב-{settings.llm_base_url} ({exc}). "
+            "ודאו ש-Ollama/השרת המקומי פועל ושהמודל הורד (ollama pull)."
         ) from exc
     except Exception as exc:  # noqa: BLE001
-        raise LLMError(f"Error calling the language model: {exc}") from exc
+        raise LLMError(f"שגיאה בקריאה למודל השפה: {exc}") from exc
 
 
 def _ollama_native_url(settings: Settings) -> str:
@@ -65,7 +59,7 @@ def _ollama_native_url(settings: Settings) -> str:
 
 def _chat(settings: Settings, messages: list[dict], temperature: float = 0.2) -> str:
     if settings.llm_provider == "ollama":
-        # Ollama native: controls num_ctx (the /v1 ignores it) and disables reasoning.
+        # Ollama native: שולט ב-num_ctx (ה-/v1 מתעלם ממנו) ומכבה reasoning.
         url = _ollama_native_url(settings)
         payload = {
             "model": settings.llm_model,
@@ -81,7 +75,7 @@ def _chat(settings: Settings, messages: list[dict], temperature: float = 0.2) ->
         try:
             data = _post_json(settings, url, payload)
         except LLMError as exc:
-            # Models without "thinking" may reject the think parameter — try again without it.
+            # מודלים ללא "חשיבה" עלולים לדחות את הפרמטר think — ננסה שוב בלעדיו.
             if "think" in str(exc).lower():
                 payload.pop("think", None)
                 data = _post_json(settings, url, payload)
@@ -90,9 +84,9 @@ def _chat(settings: Settings, messages: list[dict], temperature: float = 0.2) ->
         try:
             return data["message"]["content"]
         except (KeyError, TypeError) as exc:
-            raise LLMError(f"Unexpected Ollama response format: {data}") from exc
+            raise LLMError(f"תשובת Ollama בפורמט בלתי צפוי: {data}") from exc
 
-    # Default: OpenAI-compatible interface (vLLM / LM Studio)
+    # ברירת מחדל: ממשק תואם OpenAI (vLLM / LM Studio)
     url = settings.llm_base_url.rstrip("/") + "/chat/completions"
     payload = {
         "model": settings.llm_model,
@@ -105,11 +99,11 @@ def _chat(settings: Settings, messages: list[dict], temperature: float = 0.2) ->
     try:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise LLMError(f"Unexpected model response format: {data}") from exc
+        raise LLMError(f"תשובת המודל בפורמט בלתי צפוי: {data}") from exc
 
 
 def check_available(settings: Settings) -> bool:
-    """Quick check if the model server is available."""
+    """בדיקה מהירה אם שרת המודל זמין."""
     try:
         url = settings.llm_base_url.rstrip("/") + "/models"
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {settings.llm_api_key}"})
@@ -119,7 +113,7 @@ def check_available(settings: Settings) -> bool:
         return False
 
 
-# ---------- Building the transcript text ----------
+# ---------- בניית טקסט התמלול ----------
 
 def build_transcript_text(result: dict[str, Any]) -> str:
     speakers = result.get("speakers", {})
@@ -144,12 +138,12 @@ def _chunks_by_chars(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-# ---------- Parsing JSON content ----------
+# ---------- ניתוח JSON עמיד ----------
 
 def _parse_json(content: str) -> dict[str, Any]:
-    """Extract JSON object from the model response gracefully."""
+    """מחלץ אובייקט JSON מתוך תשובת המודל בצורה סלחנית."""
     text = content.strip()
-    # Remove code blocks if present
+    # הסרת גדרות קוד אם יש
     text = re.sub(r"^```(?:json)?", "", text).strip()
     text = re.sub(r"```$", "", text).strip()
     start, end = text.find("{"), text.rfind("}")
@@ -179,42 +173,30 @@ def _normalize_summary(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ---------- Prompts ----------
+# ---------- פרומפטים (ניתנים לעריכה מהממשק דרך prompts_store) ----------
 
-_SYSTEM = (
-    "אתה עוזר מקצועי ודיסקרטי המסכם שיחות בעברית עבור מכון פוע\"ה. "
-    "השיחות עשויות לכלול תוכן רגיש (רפואי, הלכתי, אישי) — שמור על ניסוח עובדתי ומכובד. "
-    "החזר אך ורק JSON תקין, ללא טקסט נוסף וללא גדרות קוד."
-)
+def _p(key: str) -> str:
+    from .. import prompts_store  # ייבוא עצל למניעת מעגליות
 
-_JSON_INSTRUCTIONS = (
-    "סכם את השיחה והחזר JSON במבנה הבא בלבד:\n"
-    "{\n"
-    '  "summary": "פסקה תמציתית של עיקרי השיחה",\n'
-    '  "key_points": ["נקודה עיקרית", "..."],\n'
-    '  "action_items": ["משימה/המשך טיפול", "..."],\n'
-    '  "topics": ["נושא", "..."],\n'
-    '  "keywords": ["מילת מפתח", "..."]\n'
-    "}\n"
-    "כל הערכים בעברית. אם אין פריטים לשדה — החזר רשימה ריקה."
-)
+    return prompts_store.get(key)
 
 
 def _summarize_single(settings: Settings, transcript: str) -> dict[str, Any]:
     messages = [
-        {"role": "system", "content": _SYSTEM},
-        {"role": "user", "content": f"{_JSON_INSTRUCTIONS}\n\n=== תמלול השיחה ===\n{transcript}"},
+        {"role": "system", "content": _p("summary_system")},
+        {"role": "user", "content": f"{_p('summary_instructions')}\n\n=== תמלול השיחה ===\n{transcript}"},
     ]
     content = _chat(settings, messages)
     return _normalize_summary(_parse_json(content))
 
 
 def _summarize_mapreduce(settings: Settings, transcript: str) -> dict[str, Any]:
+    system = _p("summary_system")
     chunks = _chunks_by_chars(transcript, settings.summary_max_chars)
     partials = []
     for i, ch in enumerate(chunks, 1):
         messages = [
-            {"role": "system", "content": _SYSTEM},
+            {"role": "system", "content": system},
             {
                 "role": "user",
                 "content": (
@@ -227,11 +209,11 @@ def _summarize_mapreduce(settings: Settings, transcript: str) -> dict[str, Any]:
 
     combined = "\n\n".join(f"חלק {i}:\n{p}" for i, p in enumerate(partials, 1))
     messages = [
-        {"role": "system", "content": _SYSTEM},
+        {"role": "system", "content": system},
         {
             "role": "user",
             "content": (
-                f"{_JSON_INSTRUCTIONS}\n\n"
+                f"{_p('summary_instructions')}\n\n"
                 "להלן סיכומים חלקיים של חלקי השיחה. אחד אותם לסיכום כולל אחד:\n\n" + combined
             ),
         },
@@ -242,40 +224,36 @@ def _summarize_mapreduce(settings: Settings, transcript: str) -> dict[str, Any]:
 
 def generate_client_summary(settings: Settings, result: dict[str, Any]) -> str:
     """מפיק "סיכום לפונה/לקוח" לפי הפרומפט של פוע"ה (טקסט עברי רציף)."""
-    from . import puah_prompts
-
     transcript = build_transcript_text(result)
     if not transcript.strip():
         raise LLMError("התמלול ריק — אין מה לסכם.")
     messages = [
-        {"role": "system", "content": puah_prompts.SYSTEM},
-        {"role": "user", "content": puah_prompts.CLIENT_SUMMARY_TASK + "\n\n=== תמלול השיחה ===\n" + transcript},
+        {"role": "system", "content": _p("puah_system")},
+        {"role": "user", "content": _p("client_summary_task") + "\n\n=== תמלול השיחה ===\n" + transcript},
     ]
     return _chat(settings, messages).strip()
 
 
 def generate_feedback(settings: Settings, result: dict[str, Any]) -> str:
-    """Produces "professional feedback to the consultant/rab" based on PUAH's prompt (Hebrew text)."""
-    from . import puah_prompts
-
+    """מפיק "משוב מקצועי ליועץ/לרב" לפי הפרומפט של פוע"ה (טקסט עברי)."""
     transcript = build_transcript_text(result)
     if not transcript.strip():
-        raise LLMError("The transcript is empty — nothing to analyze.")
+        raise LLMError("התמלול ריק — אין מה לנתח.")
     messages = [
-        {"role": "system", "content": puah_prompts.SYSTEM},
-        {"role": "user", "content": puah_prompts.FEEDBACK_TASK + "\n\n=== תמלול השיחה ===\n" + transcript},
+        {"role": "system", "content": _p("puah_system")},
+        {"role": "user", "content": _p("feedback_task") + "\n\n=== תמלול השיחה ===\n" + transcript},
     ]
     return _chat(settings, messages).strip()
 
 
 def summarize(settings: Settings, result: dict[str, Any]) -> dict[str, Any]:
-    """Creates a structured summary for the transcript. Adds model and generated_at_placeholder fields.
+    """מייצר סיכום מובנה לתמלול. מוסיף שדות model ו-generated_at_placeholder.
 
-    Raises LLMError if the model server is not available.
+    מעלה LLMError אם שרת המודל לא זמין.
     """
     transcript = build_transcript_text(result)
     if not transcript.strip():
-        raise LLMError("The transcript is empty — nothing to summarize.")
+        raise LLMError("התמלול ריק — אין מה לסכם.")
 
     if len(transcript) > settings.summary_max_chars:
         summary = _summarize_mapreduce(settings, transcript)

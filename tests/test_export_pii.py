@@ -1,4 +1,4 @@
-"""Tests for Word export and PII removal logic (PII itself is dummy — without HebSafeHarbor)."""
+"""בדיקות לייצוא Word ולוגיקת הסרת ה-PII (ה-PII עצמו ממוקיי — ללא HebSafeHarbor)."""
 
 import os
 import sys
@@ -33,7 +33,7 @@ def _result():
     }
 
 
-# ---------- Word export ----------
+# ---------- ייצוא Word ----------
 
 def test_build_docx_creates_file_with_content():
     from docx import Document
@@ -43,9 +43,9 @@ def test_build_docx_creates_file_with_content():
     assert out.exists() and out.stat().st_size > 0
     text = "\n".join(p.text for p in Document(str(out)).paragraphs)
     assert "שיחת בדיקה.mp4" in text
-    assert "שמי דוד כהן ואני גר ברמת גן" in text  # Dummy segment
-    assert "סיכום אוטומטי" in text                  # Dummy summary
-    assert "דוד כהן" in text                          # Dummy speaker name
+    assert "שמי דוד כהן ואני גר ברמת גן" in text  # קטע תמלול
+    assert "סיכום אוטומטי" in text                  # מקטע הסיכום
+    assert "דוד כהן" in text                          # שם הדובר
 
 
 def test_build_docx_bytes_is_valid_docx():
@@ -54,10 +54,10 @@ def test_build_docx_bytes_is_valid_docx():
     assert len(data) > 500
 
 
-# ---------- PII removal mapping (dummy) ----------
+# ---------- מיפוי הסרת PII (ממוקיי) ----------
 
 def test_deidentify_result_maps_all_fields(monkeypatch):
-    # Mimics HebSafeHarbor: replaces every text with-[REDACTED:<len>] to verify 1:1 mapping
+    # מדמה את HebSafeHarbor: מחליף כל טקסט ב-[REDACTED:<len>] כדי לאמת מיפוי 1:1
     def fake_run(settings, texts):
         assert isinstance(texts, list)
         return [f"<<{i}>>" for i, _ in enumerate(texts)]
@@ -67,12 +67,12 @@ def test_deidentify_result_maps_all_fields(monkeypatch):
     res = _result()
     out = pii_mod.deidentify_result(Settings(), res)
 
-    # Original content (deepcopy)
+    # מקור לא השתנה (deepcopy)
     assert res["segments"][1]["text"] == "שמי דוד כהן ואני גר ברמת גן"
-    # All segments replaced
+    # כל הקטעים הוחלפו
     assert out["segments"][0]["text"] == "<<0>>"
     assert out["segments"][1]["text"] == "<<1>>"
-    # Summary fields replaced and kept the structure (list lengths)
+    # שדות הסיכום הוחלפו ושמרו על המבנה (אורכי רשימות)
     assert out["summary"]["summary"] == "<<2>>"
     assert out["summary"]["key_points"] == ["<<3>>"]
     assert out["summary"]["action_items"] == ["<<4>>"]
@@ -87,10 +87,10 @@ def test_deidentify_includes_client_and_feedback(monkeypatch):
     r["client_summary"] = "שלום דוד כהן, סיכום השיחה."
     r["feedback"] = "ציון 4 מתוך 5. היועץ דוד עשה עבודה טובה."
     out = pii_mod.deidentify_result(Settings(), r)
-    # Two new fields should be replaced (redacted)
+    # שני השדות החדשים אמורים להיות מנוקים (מוחלפים)
     assert out["client_summary"].startswith("<<")
     assert out["feedback"].startswith("<<")
-    # Original content (deepcopy)
+    # המקור לא השתנה
     assert "דוד כהן" in r["client_summary"]
 
 
@@ -126,4 +126,4 @@ if __name__ == "__main__":
         else:
             fn()
         print(f"  ok: {fn.__name__}")
-    print(f"\nAll {len(fns)} Word/PII tests passed.")
+    print(f"\nכל {len(fns)} בדיקות Word/PII עברו.")

@@ -20,7 +20,7 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
-// ---------- Time helpers ----------
+// ---------- עזרי זמן ----------
 function fmtClock(sec) {
   sec = Math.max(0, Math.round(sec || 0));
   const h = Math.floor(sec / 3600);
@@ -45,21 +45,24 @@ function speakerColor(id, speakerIds) {
   return SPEAKER_COLORS[(idx >= 0 ? idx : 0) % SPEAKER_COLORS.length];
 }
 
-// ---------- Health ----------
+// ---------- בריאות ----------
 async function checkHealth() {
   const el = $("health");
   try {
     const r = await fetch(`${API}/health`);
-    const d = await r.json();
-    el.textContent = `מחובר · מודל: ${d.asr_model}`;
-    el.className = "health ok";
+    if (!r.ok) throw new Error();
+    await r.json();
+    // מחובר — אין צורך להציג דבר
+    el.className = "health hidden";
+    el.textContent = "";
   } catch {
-    el.textContent = "אין חיבור לשרת";
+    // רק כשמנותק — מציגים אזהרה
+    el.textContent = "⚠ אין חיבור לשרת";
     el.className = "health bad";
   }
 }
 
-// ---------- File selection ----------
+// ---------- בחירת קובץ ----------
 function setupUpload() {
   const dz = $("dropzone");
   const input = $("fileInput");
@@ -136,14 +139,14 @@ function startUpload() {
   xhr.send(fd);
 }
 
-// ---------- Job list ----------
+// ---------- רשימת משימות ----------
 async function refreshJobs() {
   try {
     const r = await fetch(`${API}/jobs`);
     state.jobs = await r.json();
     renderJobs();
   } catch {
-    /* Ignore — will try again in next tick */
+    /* מתעלמים — ננסה שוב בפעימה הבאה */
   }
 }
 
@@ -199,11 +202,12 @@ async function deleteJob(id) {
   refreshJobs();
 }
 
-// ---------- Job selection and transcript display ----------
+// ---------- בחירת משימה והצגת תמלול ----------
 async function selectJob(id) {
   hideDashboard();
+  hideSettings();
   state.currentJobId = id;
-  state.result = null; // Clear previous result to auto-load in next tick
+  state.result = null; // ניקוי תוצאה קודמת כדי שטעינה אוטומטית בפעימה תעבוד
   renderJobs();
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
@@ -257,7 +261,7 @@ function renderTranscript() {
   $("tMeta").textContent =
     `${res.num_speakers} דוברים · משך ${fmtDuration(res.duration_sec)} · ${res.segments.length} קטעים`;
 
-  // Export links
+  // קישורי ייצוא
   $("expWord").href = `${API}/jobs/${res.job_id}/export?format=docx`;
   $("expTxt").href = `${API}/jobs/${res.job_id}/export?format=txt`;
   $("expSrt").href = `${API}/jobs/${res.job_id}/export?format=srt`;
@@ -266,17 +270,17 @@ function renderTranscript() {
   $("expPiiWord").href = `${API}/jobs/${res.job_id}/pii?format=docx`;
   $("expPiiJson").href = `${API}/jobs/${res.job_id}/pii?format=json`;
 
-  // Automatic summary + Puah outputs (client summary, advisor feedback)
+  // סיכום אוטומטי + תוצרי פוע"ה (סיכום ללקוח, משוב ליועץ)
   renderSummary(res);
   renderPuahOutputs(res);
 
-  // Player
+  // נגן
   const player = $("player");
   player.src = `${API}/jobs/${res.job_id}/media`;
 
   const speakerIds = Object.keys(res.speakers);
 
-  // Speaker legend with name editing
+  // מקרא דוברים עם עריכת שמות
   const legend = $("speakerLegend");
   legend.innerHTML = "";
   for (const sid of speakerIds) {
@@ -292,16 +296,16 @@ function renderTranscript() {
     legend.appendChild(chip);
   }
 
-  // Reset internal search and build segments
+  // איפוס חיפוש פנימי ובניית הקטעים
   $("findInput").value = "";
   state.findQuery = "";
   renderSegments("");
 
-  // Highlight the playing segment
+  // הדגשת הקטע המתנגן
   player.ontimeupdate = () => highlightSegment(player.currentTime);
 }
 
-// Build segments, with optional internal search highlighting
+// בניית קטעי התמלול, עם הדגשה אופציונלית של מונחי חיפוש פנימי
 function renderSegments(query) {
   const res = state.result;
   if (!res) return;
@@ -357,7 +361,7 @@ async function saveSpeakerNames() {
   }
 }
 
-// ---------- Automatic summary ----------
+// ---------- סיכום אוטומטי ----------
 function renderSummary(res) {
   const el = $("summarySection");
   const s = res.summary;
@@ -392,7 +396,7 @@ function renderSummary(res) {
     </div>`;
 
   $("genSummaryBtn").onclick = generateSummary;
-  // Click on topic/keyword -> internal search
+  // לחיצה על נושא/מילת מפתח -> חיפוש בתוך התמלול
   el.querySelectorAll(".tag").forEach((t) =>
     t.addEventListener("click", () => {
       const term = t.dataset.term;
@@ -457,7 +461,7 @@ async function generateSummary() {
   }
 }
 
-// ---------- Internal search (within the transcript) ----------
+// ---------- חיפוש פנימי (בתוך התמלול) ----------
 function setupFind() {
   $("findInput").addEventListener("input", (e) => doFind(e.target.value));
   $("findNext").addEventListener("click", () => navigateFind(1));
@@ -492,7 +496,7 @@ function navigateFind(dir) {
   $("findCount").textContent = `${state.findIndex + 1} / ${marks.length}`;
 }
 
-// ---------- Global search (within all transcripts) ----------
+// ---------- חיפוש גלובלי (בכל התמלולים) ----------
 function setupGlobalSearch() {
   const input = $("globalSearch");
   input.addEventListener("input", () => {
@@ -538,7 +542,7 @@ async function runGlobalSearch(q) {
 
 async function openSearchResult(jobId, start, query) {
   await selectJob(jobId);
-  // Short delay for rendering the transcript, then jump to time + highlight
+  // המתנה קצרה לרינדור התמלול, ואז קפיצה לזמן + הדגשה
   setTimeout(() => {
     if (state.result && state.result.job_id === jobId) {
       const player = $("player");
@@ -552,7 +556,7 @@ async function openSearchResult(jobId, start, query) {
   }, 250);
 }
 
-// ---------- Highlighting terms ----------
+// ---------- הדגשת מונחים ----------
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -576,12 +580,12 @@ function escapeHtml(s) {
   );
 }
 
-// ---------- Polling ----------
+// ---------- פעימת רענון ----------
 function startPolling() {
   state.pollTimer = setInterval(async () => {
     const hadProcessing = state.jobs.some((j) => ["queued", "processing"].includes(j.status));
     await refreshJobs();
-    // If the current job just finished — load the result
+    // אם המשימה הנוכחית הסתיימה זה עתה — נטען את התוצאה
     const cur = state.jobs.find((j) => j.id === state.currentJobId);
     if (cur && cur.status === "done" && !state.result) await loadResult(cur.id);
     if (cur && cur.status === "processing") showProcessing(cur);
@@ -589,7 +593,7 @@ function startPolling() {
   }, 2500);
 }
 
-// ---------- Statistics dashboard ----------
+// ---------- דשבורד סטטיסטיקות ----------
 function hideDashboard() {
   $("dashboardView").classList.add("hidden");
   $("dashBtn").classList.remove("active");
@@ -597,6 +601,7 @@ function hideDashboard() {
 
 function toggleDashboard() {
   if ($("dashboardView").classList.contains("hidden")) {
+    hideSettings();
     $("emptyState").classList.add("hidden");
     $("transcriptView").classList.add("hidden");
     $("dashboardView").classList.remove("hidden");
@@ -677,18 +682,155 @@ function renderCloud(id, items) {
     .join("");
   el.querySelectorAll(".kw-item").forEach((it) =>
     it.addEventListener("click", () => {
-      toggleDashboard(); // Close the dashboard
+      toggleDashboard(); // סגירת הדשבורד
       $("globalSearch").value = it.dataset.term;
       runGlobalSearch(it.dataset.term);
     })
   );
 }
 
-// ---------- Initialization ----------
+// ---------- הגדרות: פרומפטים + לוגואים ----------
+const _cap = (s) => s[0].toUpperCase() + s.slice(1);
+
+function hideSettings() {
+  $("settingsView").classList.add("hidden");
+  $("settingsBtn").classList.remove("active");
+}
+
+function toggleSettings() {
+  if ($("settingsView").classList.contains("hidden")) {
+    hideDashboard();
+    $("emptyState").classList.add("hidden");
+    $("transcriptView").classList.add("hidden");
+    $("settingsView").classList.remove("hidden");
+    $("settingsBtn").classList.add("active");
+    loadPrompts();
+    loadBrandingEditor();
+  } else {
+    hideSettings();
+    if (state.currentJobId) selectJob(state.currentJobId);
+    else showEmpty();
+  }
+}
+
+async function loadPrompts() {
+  const el = $("promptsEditor");
+  el.innerHTML = `<div class="dash-empty">טוען…</div>`;
+  try {
+    const d = await (await fetch(`${API}/prompts`)).json();
+    renderPrompts(d.prompts);
+  } catch {
+    el.innerHTML = `<div class="dash-empty">שגיאה בטעינת הפרומפטים</div>`;
+  }
+}
+
+function renderPrompts(prompts) {
+  const el = $("promptsEditor");
+  el.innerHTML = "";
+  for (const [key, p] of Object.entries(prompts)) {
+    const f = document.createElement("div");
+    f.className = "prompt-field";
+    f.innerHTML = `
+      <div class="pf-head">
+        <label>${escapeHtml(p.label)}</label>
+        ${p.is_custom ? '<span class="pf-badge">נערך</span>' : ""}
+      </div>
+      <textarea data-key="${key}"></textarea>
+      <div class="pf-actions">
+        <button class="btn ghost pf-save" data-key="${key}">שמור</button>
+        <button class="btn ghost pf-reset" data-key="${key}">שחזר ברירת מחדל</button>
+        <span class="pf-saved" data-key="${key}"></span>
+      </div>`;
+    f.querySelector("textarea").value = p.value; // ערך גולמי (ללא escape ב-value)
+    el.appendChild(f);
+  }
+  el.querySelectorAll(".pf-save").forEach((b) => b.addEventListener("click", () => savePrompt(b.dataset.key)));
+  el.querySelectorAll(".pf-reset").forEach((b) => b.addEventListener("click", () => resetPrompt(b.dataset.key)));
+}
+
+async function savePrompt(key) {
+  const ta = document.querySelector(`#promptsEditor textarea[data-key="${key}"]`);
+  const msg = document.querySelector(`#promptsEditor .pf-saved[data-key="${key}"]`);
+  try {
+    const r = await fetch(`${API}/prompts`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompts: { [key]: ta.value } }),
+    });
+    if (r.ok) { msg.textContent = "נשמר ✓"; setTimeout(() => (msg.textContent = ""), 2500); loadPrompts(); }
+    else msg.textContent = "שגיאה";
+  } catch { msg.textContent = "שגיאה"; }
+}
+
+async function resetPrompt(key) {
+  await fetch(`${API}/prompts/reset?key=${encodeURIComponent(key)}`, { method: "POST" });
+  loadPrompts();
+}
+
+async function loadBrandingEditor() {
+  try {
+    const st = await (await fetch(`${API}/branding`)).json();
+    for (const side of ["right", "left"]) {
+      const prev = $(`logo${_cap(side)}Preview`);
+      prev.innerHTML = st[side]
+        ? `<img src="${API}/branding/${side}?t=${Date.now()}" alt="" />`
+        : "אין לוגו";
+    }
+  } catch {}
+}
+
+async function uploadLogo(side, file) {
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const r = await fetch(`${API}/branding/${side}`, { method: "POST", body: fd });
+    if (r.ok) { loadBrandingEditor(); applyBranding(); }
+    else { const d = await r.json().catch(() => ({})); alert(d.detail || "העלאה נכשלה"); }
+  } catch { alert("העלאה נכשלה"); }
+}
+
+async function removeLogo(side) {
+  await fetch(`${API}/branding/${side}`, { method: "DELETE" });
+  loadBrandingEditor();
+  applyBranding();
+}
+
+// הצגת הלוגואים בכותרת
+async function applyBranding() {
+  try {
+    const st = await (await fetch(`${API}/branding`)).json();
+    for (const side of ["right", "left"]) {
+      const img = $(`logo${_cap(side)}`);
+      if (st[side]) { img.src = `${API}/branding/${side}?t=${Date.now()}`; img.classList.remove("hidden"); }
+      else img.classList.add("hidden");
+    }
+  } catch {}
+}
+
+function setupSettings() {
+  $("settingsBtn").addEventListener("click", toggleSettings);
+  $("promptsResetAll").addEventListener("click", async () => {
+    await fetch(`${API}/prompts/reset`, { method: "POST" });
+    loadPrompts();
+  });
+  document.querySelectorAll("[data-logo]").forEach((b) => {
+    const side = b.dataset.logo;
+    if (b.dataset.act === "upload") b.addEventListener("click", () => $(`logo${_cap(side)}Input`).click());
+    if (b.dataset.act === "remove") b.addEventListener("click", () => removeLogo(side));
+  });
+  ["right", "left"].forEach((side) =>
+    $(`logo${_cap(side)}Input`).addEventListener("change", (e) => uploadLogo(side, e.target.files[0]))
+  );
+}
+
+// ---------- אתחול ----------
 checkHealth();
 setupUpload();
 setupFind();
 setupGlobalSearch();
+setupSettings();
+applyBranding();
 refreshJobs();
 startPolling();
 $("refreshBtn").addEventListener("click", refreshJobs);
