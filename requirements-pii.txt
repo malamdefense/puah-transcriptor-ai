@@ -1,22 +1,23 @@
-# PII removal dependencies (HebSafeHarbor) — installed in isolated virtual environment (.venv-pii)
-# only, because they require pydantic<2 / spaCy 3.2 that conflicts with the main app.
-# The worker calls them as a sub-process via app/pii_runner.py.
+# תלויות הסרת PII (HebSafeHarbor) — מותקנות בסביבה וירטואלית *מבודדת* (.venv-pii)
+# בלבד, כי הן דורשות pydantic<2 / spaCy 3.2 שמתנגשים עם האפליקציה הראשית.
+# ה-worker קורא להן כתת-תהליך דרך app/pii_runner.py.
 #
-# Manual installation:
+# התקנה ידנית:
 #   python -m venv .venv-pii
 #   .venv-pii\Scripts\python -m pip install -r requirements-pii.txt
-# (or simply: python rebuild.py — it installs this automatically)
+# (או פשוט: python rebuild.py — מתקין גם את זה אוטומטית)
 
-# spaCy 3.2 / thinc / blis old versions built with numpy 1.x — numpy 2 breaks them
-# (numpy.dtype size changed). Must be locked below 2.
+# spaCy 3.2 / thinc / blis הוותיקים נבנו מול numpy 1.x — numpy 2 שובר אותם
+# (numpy.dtype size changed). חובה להצמיד מתחת ל-2.
 numpy<2
 
-# presidio-analyzer locked to 2.2.31 (the latest version supporting spaCy 3.2). Must be locked
-# also to the same version — otherwise the 'replace_in_hebrew' operator of HebSafeHarbor is not recognized (InvalidParamError).
+# presidio-analyzer ננעל ל-2.2.31 (הגרסה האחרונה התומכת ב-spaCy 3.2). חובה לנעול
+# גם את ה-anonymizer לאותה גרסה — אחרת ה-operator המותאם 'replace_in_hebrew'
+# של HebSafeHarbor אינו מזוהה (InvalidParamError).
 presidio-analyzer==2.2.31
 presidio-anonymizer==2.2.31
 
 hebsafeharbor
 
-# Hebrew NER model used by HebSafeHarbor (he_ner_news_trf)
+# מודל ה-NER העברי שבו HebSafeHarbor משתמש (he_ner_news_trf)
 https://github.com/8400TheHealthNetwork/HebSpacy/releases/download/he_ner_news_trf-3.2.1/he_ner_news_trf-3.2.1-py3-none-any.whl

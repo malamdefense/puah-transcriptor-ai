@@ -118,6 +118,9 @@ def test_summarize_single_shot(monkeypatch):
     assert len(calls) == 1  # מסלול חד-פעמי
 
 
+_LONG_OUT = ("סיכום לפונה\nשלום וברכה,\n" + "בשיחתנו עסקנו בבירור מקיף בנושא. " * 8).strip()
+
+
 def test_generate_client_summary_and_feedback(monkeypatch):
     settings = Settings()
     captured = {}
@@ -125,16 +128,48 @@ def test_generate_client_summary_and_feedback(monkeypatch):
     def fake_chat(s, messages, temperature=0.2):
         captured["sys"] = messages[0]["content"]
         captured["user"] = messages[1]["content"]
-        return "  סיכום לפונה\nשלום וברכה, ...  "  # עם רווחים מסביב לבדיקת strip
+        return "  " + _LONG_OUT + "  "  # רווחים מסביב לבדיקת strip
 
     monkeypatch.setattr(sm, "_chat", fake_chat)
     r = _sample_result("j3")
     cs = sm.generate_client_summary(settings, r)
-    assert cs == "סיכום לפונה\nשלום וברכה, ..."  # נחתך (strip)
+    assert cs == _LONG_OUT  # נחתך (strip)
     assert "מכון פוע" in captured["sys"]  # נעשה שימוש ב-system של פוע"ה
     assert "סיכום לפונה" in captured["user"]  # ושל משימת הסיכום-ללקוח
     fb = sm.generate_feedback(settings, r)
     assert fb and "תמלול השיחה" in captured["user"]  # התמלול הוזרק לפרומפט
+
+
+def test_retries_on_degenerate_output(monkeypatch):
+    """רגרסיה: gemma פולט לעיתים <unused50> — חייבים לזהות ולנסות שוב."""
+    calls = {"n": 0}
+
+    def flaky(s, messages, temperature=0.2):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "<unused50>" * 30  # הפלט המנוון שראינו בייצור
+        return _LONG_OUT
+
+    monkeypatch.setattr(sm, "_chat", flaky)
+    out = sm.generate_client_summary(Settings(), _sample_result("j9"))
+    assert calls["n"] == 2  # ניסה שוב לאחר הפלט הפגום
+    assert "<unused" not in out and out == _LONG_OUT
+
+
+def test_raises_after_all_attempts_fail(monkeypatch):
+    monkeypatch.setattr(sm, "_chat", lambda s, m, temperature=0.2: "<unused50>" * 30)
+    try:
+        sm.generate_feedback(Settings(), _sample_result("j10"))
+        assert False, "expected LLMError"
+    except sm.LLMError as exc:
+        assert "לא תקין" in str(exc)
+
+
+def test_looks_valid_rules():
+    assert sm._looks_valid("א" * 200) is False  # מעט תווים ייחודיים = מנוון
+    assert sm._looks_valid("קצר") is False
+    assert sm._looks_valid(_LONG_OUT) is True
+    assert sm._looks_valid(_LONG_OUT + "<unused50>") is False
 
 
 def test_summarize_mapreduce(monkeypatch):
@@ -146,7 +181,7 @@ def test_summarize_mapreduce(monkeypatch):
         # הקריאה האחרונה (האיחוד) מחזירה JSON; קודמות מחזירות טקסט
         if "JSON" in messages[-1]["content"]:
             return '{"summary": "מאוחד", "key_points": ["נ"]}'
-        return "סיכום חלקי"
+        return "סיכום חלקי של קטע זה, עם מספיק תוכן כדי לעבור ולידציה."
 
     monkeypatch.setattr(sm, "_chat", fake_chat)
     out = sm.summarize(settings, _sample_result("j2"))

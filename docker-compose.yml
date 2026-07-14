@@ -1,6 +1,6 @@
-# Run the On-Prem system: Ollama + API + worker, share data and GPU.
-# Requires nvidia-container-toolkit installed on the host.
-# Note: PII removal (HebSafeHarbor) is not included here — see DEPLOYMENT.md section 10.
+# הרצת המערכת On-Prem: Ollama + API + worker, חולקים נתונים ו-GPU.
+# דורש nvidia-container-toolkit מותקן על המארח.
+# הערה: הסרת PII (HebSafeHarbor) אינה כלולה כאן — ראו DEPLOYMENT.md סעיף 10.
 
 services:
   ollama:
@@ -15,7 +15,20 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    # After deployment: docker compose exec ollama ollama pull gemma4:12b
+
+  # משיכת המודלים אוטומטית בעלייה הראשונה (רץ פעם אחת ומסיים):
+  #   gemma4:12b — סיכום / סיכום-ללקוח / משוב      |  bge-m3 — embeddings ל-RAG הסמנטי
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "until ollama list >/dev/null 2>&1; do echo 'ממתין ל-Ollama…'; sleep 2; done;
+       ollama pull gemma4:12b && ollama pull bge-m3 && echo '✓ המודלים מוכנים'"
+    restart: "no"
 
   api:
     build: .
@@ -25,7 +38,7 @@ services:
       - "8000:8000"
     env_file: .env
     environment:
-      - PUAH_LLM_BASE_URL=http://ollama:11434/v1   # Ollama service of compose
+      - PUAH_LLM_BASE_URL=http://ollama:11434/v1   # שירות ה-Ollama של compose
     volumes:
       - ./data:/app/data
     depends_on:
@@ -44,7 +57,7 @@ services:
     depends_on:
       - ollama
     restart: unless-stopped
-    # Assign GPU to worker (it runs the transcription and diarization models)
+    # הקצאת GPU ל-worker (הוא זה שמריץ את מודלי התמלול והזיהוי)
     deploy:
       resources:
         reservations:

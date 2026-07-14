@@ -173,6 +173,45 @@ def _normalize_summary(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------- ולידציה של פלט + ניסיונות חוזרים ----------
+# gemma נוטה לעיתים (כ-20% מהמקרים!) להתנוון ולפלוט טוקנים שמורים כמו <unused50> במקום
+# תשובה. זה לא תלוי באורך הקלט ולא דטרמיניסטי — הרצה חוזרת של אותו פרומפט מצליחה.
+# לכן: מוודאים שהפלט תקין, ואם לא — מנסים שוב עם טמפרטורה גבוהה יותר כדי לשבור את הניוון.
+
+_JUNK_MARKERS = ("<unused", "<pad>", "<|", "�")
+
+
+def _looks_valid(text: str, min_len: int = 60) -> bool:
+    t = (text or "").strip()
+    if len(t) < min_len:
+        return False
+    if any(m in t for m in _JUNK_MARKERS):
+        return False
+    if len(set(t)) < 12:  # פלט מנוון = מעט מאוד תווים ייחודיים
+        return False
+    return True
+
+
+def _chat_checked(
+    settings: Settings,
+    messages: list[dict],
+    attempts: int = 3,
+    validator: Any = None,
+) -> str:
+    """קורא ל-LLM ומוודא שהפלט תקין; מנסה שוב (בטמפרטורה עולה) אם התקבל פלט מנוון."""
+    check = validator or (lambda t: _looks_valid(t))
+    last = ""
+    for i in range(max(1, attempts)):
+        out = _chat(settings, messages, temperature=0.2 + 0.25 * i)
+        if check(out):
+            return out
+        last = out
+    raise LLMError(
+        f"המודל החזיר פלט לא תקין ב-{attempts} ניסיונות (ככל הנראה פלט מנוון). "
+        f"תחילת הפלט: {last[:80]!r}"
+    )
+
+
 # ---------- פרומפטים (ניתנים לעריכה מהממשק דרך prompts_store) ----------
 
 def _p(key: str) -> str:
@@ -186,7 +225,8 @@ def _summarize_single(settings: Settings, transcript: str) -> dict[str, Any]:
         {"role": "system", "content": _p("summary_system")},
         {"role": "user", "content": f"{_p('summary_instructions')}\n\n=== תמלול השיחה ===\n{transcript}"},
     ]
-    content = _chat(settings, messages)
+    # תקין = ניתן לפרסר ל-JSON עם תוכן
+    content = _chat_checked(settings, messages, validator=lambda t: bool(_parse_json(t)))
     return _normalize_summary(_parse_json(content))
 
 
@@ -205,7 +245,7 @@ def _summarize_mapreduce(settings: Settings, transcript: str) -> dict[str, Any]:
                 ),
             },
         ]
-        partials.append(_chat(settings, messages))
+        partials.append(_chat_checked(settings, messages, validator=lambda t: _looks_valid(t, 30)))
 
     combined = "\n\n".join(f"חלק {i}:\n{p}" for i, p in enumerate(partials, 1))
     messages = [
@@ -218,7 +258,7 @@ def _summarize_mapreduce(settings: Settings, transcript: str) -> dict[str, Any]:
             ),
         },
     ]
-    content = _chat(settings, messages)
+    content = _chat_checked(settings, messages, validator=lambda t: bool(_parse_json(t)))
     return _normalize_summary(_parse_json(content))
 
 
@@ -231,7 +271,7 @@ def generate_client_summary(settings: Settings, result: dict[str, Any]) -> str:
         {"role": "system", "content": _p("puah_system")},
         {"role": "user", "content": _p("client_summary_task") + "\n\n=== תמלול השיחה ===\n" + transcript},
     ]
-    return _chat(settings, messages).strip()
+    return _chat_checked(settings, messages, validator=lambda t: _looks_valid(t, 120)).strip()
 
 
 def generate_feedback(settings: Settings, result: dict[str, Any]) -> str:
@@ -243,7 +283,7 @@ def generate_feedback(settings: Settings, result: dict[str, Any]) -> str:
         {"role": "system", "content": _p("puah_system")},
         {"role": "user", "content": _p("feedback_task") + "\n\n=== תמלול השיחה ===\n" + transcript},
     ]
-    return _chat(settings, messages).strip()
+    return _chat_checked(settings, messages, validator=lambda t: _looks_valid(t, 120)).strip()
 
 
 def summarize(settings: Settings, result: dict[str, Any]) -> dict[str, Any]:

@@ -1,30 +1,30 @@
-# --- API + Web server ---
+# --- שרת ה-API + Web ---
 fastapi>=0.110
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 pydantic>=2.6
 pydantic-settings>=2.2
 
-# --- Hebrew transcription (ivrit.ai / faster-whisper) ---
+# --- תמלול עברית (ivrit.ai / faster-whisper) ---
 faster-whisper>=1.0.3
 
-# --- Speaker diarization ---
+# --- זיהוי דוברים ---
 pyannote.audio>=3.1
-# Reading WAV to memory bypasses torchcodec (depends on FFmpeg DLLs on Windows)
+# קריאת WAV לזיכרון לעקיפת torchcodec (שתלוי ב-DLLs של FFmpeg ב-Windows)
 soundfile>=0.12
 
-# --- Export Word + Excel ---
+# --- ייצוא Word + Excel ---
 python-docx>=1.1
 openpyxl>=3.1
 
-# Note: HebSafeHarbor (PII removal) is not included here on purpose — it requires pydantic<2 / spaCy 3.2
-# that conflicts with the main app. It is installed in isolated virtual environment (.venv-pii) from
-# requirements-pii.txt, and called as a sub-process. See README.
+# הערה: HebSafeHarbor (הסרת PII) אינו כאן במכוון — הוא דורש pydantic<2 / spaCy 3.2
+# שמתנגשים עם האפליקציה. הוא מותקן בסביבה וירטואלית מבודדת (.venv-pii) מתוך
+# requirements-pii.txt, ונקרא כתת-תהליך. ראו README.
 
-# Note: torch + torchaudio are not included here on purpose.
-# They must be installed with the appropriate CUDA support for the GPU — and*after* requirements (otherwise pyannote/torchcodec
-# pulls the CPU torch version that takes over). The correct order (rebuild.py does this automatically):
+# הערה: torch + torchaudio אינם כאן במכוון.
+# יש להתקין אותם עם תמיכת CUDA מתאימה ל-GPU — ו*אחרי* requirements (אחרת pyannote/torchcodec
+# מושכים גרסת CPU של torch שגוברת). הסדר הנכון (rebuild.py עושה זאת אוטומטית):
 #   pip install -r requirements.txt
 #   pip uninstall -y torch torchaudio
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-# cu128 = CUDA 12.8 (supports Blackwell/Ada/Hopper/Ampere). For older GPU: cu124.
+# cu128 = CUDA 12.8 (תומך Blackwell/Ada/Hopper/Ampere). ל-GPU ישן יותר: cu124.

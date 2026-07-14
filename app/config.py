@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     client_summary_enabled: bool = Field(default=True)
     feedback_enabled: bool = Field(default=True)
 
+    # --- RAG סמנטי (embeddings מקומיים דרך Ollama) ---
+    # bge-m3: רב-לשוני עם עברית טובה. משיכה:  ollama pull bge-m3
+    embed_model: str = Field(default="bge-m3")
+
     # --- ייצוא Word + הסרת PII (אחרי שמירת התמלול) ---
     # יצירת מסמך Word לכל תמלול ({job_id}.docx)
     word_export_enabled: bool = Field(default=True)
