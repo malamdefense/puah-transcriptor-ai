@@ -28,7 +28,8 @@ EMBED_MODEL="$(meta embed-model bge-m3)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y --no-install-recommends \
-    python3 python3-venv python3-pip ffmpeg libsndfile1 curl ca-certificates
+    python3 python3-venv python3-pip ffmpeg libsndfile1 curl ca-certificates \
+    zstd            # נדרש למתקין של Ollama
 
 # ---------- 2. דרייברי NVIDIA (המתקין הרשמי של GCP) ----------
 if ! command -v nvidia-smi >/dev/null 2>&1; then
