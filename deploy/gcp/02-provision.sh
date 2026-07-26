@@ -95,6 +95,21 @@ else
   fi
 fi
 
+# 2b: גרסת הדרייבר — Ollama דורש 550+ (המתקין של GCP מתקין 535, ואז Ollama נופל ל-CPU!)
+MIN_DRV="${MIN_DRIVER:-550}"
+DRV_VER="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1 || echo 0)"
+if [[ "${DRV_VER:-0}" -lt "$MIN_DRV" ]]; then
+  warn "דרייבר NVIDIA $DRV_VER ישן מדי ל-Ollama (נדרש ${MIN_DRV}+). משדרג ל-nvidia-driver-${MIN_DRV}-server…"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "nvidia-driver-${MIN_DRV}-server" \
+    || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "nvidia-driver-${MIN_DRV}"
+  hr
+  warn "שודרג ל-דרייבר ${MIN_DRV} — נדרש REBOOT כדי שייטען."
+  echo "  הרץ:  ${c_step}sudo reboot${c_off}   ואז התחבר מחדש והרץ שוב את הסקריפט."
+  hr
+  exit 10
+fi
+ok "דרייבר NVIDIA $DRV_VER (>=${MIN_DRV}, תואם ל-Ollama)"
+
 # ---------- שלב 3: Ollama (גרסה עדכנית — נדרש ל-gemma4) ----------
 say "שלב 3/9 — Ollama"
 if ! command -v ollama >/dev/null 2>&1; then
@@ -153,6 +168,18 @@ for M in "$LLM_MODEL" "$EMBED_MODEL"; do
     echo "  מושך $M…"; ollama pull "$M"
   fi
 done
+
+# אימות ש-Ollama מריץ את ה-LLM על ה-GPU (ולא נופל ל-CPU בשקט → סיכומים איטיים/timeout)
+say "  מאמת ש-Ollama על ה-GPU…"
+curl -fsS localhost:11434/api/generate -d "{\"model\":\"$LLM_MODEL\",\"prompt\":\"שלום\",\"stream\":false,\"options\":{\"num_predict\":8}}" >/dev/null 2>&1 || true
+VRAM_B="$(curl -fsS localhost:11434/api/ps 2>/dev/null | "$VENV_PY" -c 'import sys,json;m=json.load(sys.stdin).get("models",[]);print(m[0]["size_vram"] if m else 0)' 2>/dev/null || echo 0)"
+if [[ "${VRAM_B:-0}" -gt 0 ]]; then
+  ok "  Ollama על ה-GPU (VRAM: $(( VRAM_B / 1000000000 )).$(( (VRAM_B/100000000) % 10 )) GB)"
+else
+  warn "  Ollama רץ על CPU! (size_vram=0) — הסיכומים יהיו איטיים/יעשו timeout."
+  warn "  בדוק:  sudo journalctl -u ollama | grep -i 'driver too old\\|library=cpu'"
+  warn "  לרוב הסיבה: דרייבר NVIDIA < 550. שדרג:  sudo apt-get install -y nvidia-driver-550-server && sudo reboot"
+fi
 
 # ---------- שלב 8: אימות טוקן HF + אישור מודלי pyannote ----------
 say "שלב 8/9 — בדיקת גישה ל-HuggingFace (זיהוי דוברים)"

@@ -13,11 +13,9 @@ from .config import get_settings
 from .pipeline import puah_prompts
 
 # מטא-דאטה לכל פרומפט הניתן לעריכה: מפתח -> (כותרת בעברית, ערך ברירת מחדל)
+# הערה: "סיכום כללי — הנחיית מערכת" (SUMMARY_SYSTEM) אינו ניתן לעריכה מהממשק בכוונה —
+# הוא קבוע בקוד (app/pipeline/puah_prompts.py). רק הוראות הפלט (JSON) נחשפות לעריכה.
 FIELDS: dict[str, dict[str, str]] = {
-    "summary_system": {
-        "label": "סיכום כללי — הנחיית מערכת",
-        "default": puah_prompts.SUMMARY_SYSTEM,
-    },
     "summary_instructions": {
         "label": "סיכום כללי — הוראות פלט (JSON)",
         "default": puah_prompts.SUMMARY_INSTRUCTIONS,

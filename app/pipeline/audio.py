@@ -42,7 +42,7 @@ def extract_audio(src: Path, dst: Path) -> None:
         "-acodec", "pcm_s16le",
         str(dst),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise FFmpegError(
             f"חילוץ האודיו נכשל (קוד {proc.returncode}).\n"
@@ -64,7 +64,7 @@ def get_duration(path: Path) -> float:
         "-of", "default=noprint_wrappers=1:nokey=1",
         str(path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     try:
         return float(proc.stdout.strip())
     except (ValueError, AttributeError):

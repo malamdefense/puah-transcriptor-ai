@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from urllib.parse import quote
 
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, prompts_store
@@ -350,7 +350,9 @@ def stats() -> dict:
             with_pii += 1
         res = load_result(job["id"])
         summ = (res or {}).get("summary") or {}
-        if summ.get("summary"):
+        # "יש סיכום" = אובייקט הסיכום מכיל תוכן כלשהו. (שדה summary הוסר מברירת המחדל,
+        # אך נשמר בבדיקה לתאימות לאחור עם עבודות שהופקו לפני השינוי.)
+        if any(summ.get(f) for f in ("summary", "key_points", "action_items", "topics", "keywords")):
             with_summary += 1
         for k in summ.get("keywords", []) or []:
             if str(k).strip():

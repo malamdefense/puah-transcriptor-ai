@@ -98,7 +98,8 @@ def _find_pii_base_python(explicit: str | None) -> tuple[list[str] | None, str |
     if explicit:
         candidates.append([explicit])
     for v in ("3.10", "3.9", "3.8"):
-        candidates.append(["py", f"-{v}"])  # py launcher בלבד ב-Windows
+        candidates.append(["py", f"-{v}"])      # py launcher (Windows)
+        candidates.append([f"python{v}"])       # שם מפורש (Linux/macOS)
     candidates.append([sys.executable])  # אם המפרש הנוכחי מתאים
     probe = "import sys;print('%d.%d'%sys.version_info[:2])"
     for cmd in candidates:

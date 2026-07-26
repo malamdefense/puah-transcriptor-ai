@@ -17,6 +17,9 @@ soundfile>=0.12
 python-docx>=1.1
 openpyxl>=3.1
 
+# --- RAG סמנטי: אחסון וקטורי (embedded, On-Prem) ---
+chromadb>=0.5,<2
+
 # הערה: HebSafeHarbor (הסרת PII) אינו כאן במכוון — הוא דורש pydantic<2 / spaCy 3.2
 # שמתנגשים עם האפליקציה. הוא מותקן בסביבה וירטואלית מבודדת (.venv-pii) מתוך
 # requirements-pii.txt, ונקרא כתת-תהליך. ראו README.

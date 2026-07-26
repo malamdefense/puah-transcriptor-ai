@@ -388,7 +388,7 @@ function renderSummary(res) {
   el.innerHTML = `
     <div class="summary-card">
       <div class="sc-head"><h3>📝 סיכום אוטומטי</h3>${btn}</div>
-      <div class="sc-body">${escapeHtml(s.summary || "")}</div>
+      ${s.summary ? `<div class="sc-body">${escapeHtml(s.summary)}</div>` : ""}
       ${s.key_points && s.key_points.length ? `<div class="sc-block"><h4>נקודות עיקריות</h4>${list(s.key_points)}</div>` : ""}
       ${s.action_items && s.action_items.length ? `<div class="sc-block"><h4>פעולות והמשך טיפול</h4>${list(s.action_items)}</div>` : ""}
       ${s.topics && s.topics.length ? `<div class="sc-block"><h4>נושאים</h4>${tags(s.topics, "")}</div>` : ""}

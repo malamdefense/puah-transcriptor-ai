@@ -16,6 +16,7 @@ import urllib.request
 from typing import Any
 
 from ..config import Settings
+from . import puah_prompts
 
 
 class LLMError(RuntimeError):
@@ -222,7 +223,7 @@ def _p(key: str) -> str:
 
 def _summarize_single(settings: Settings, transcript: str) -> dict[str, Any]:
     messages = [
-        {"role": "system", "content": _p("summary_system")},
+        {"role": "system", "content": puah_prompts.SUMMARY_SYSTEM},
         {"role": "user", "content": f"{_p('summary_instructions')}\n\n=== תמלול השיחה ===\n{transcript}"},
     ]
     # תקין = ניתן לפרסר ל-JSON עם תוכן
@@ -231,7 +232,7 @@ def _summarize_single(settings: Settings, transcript: str) -> dict[str, Any]:
 
 
 def _summarize_mapreduce(settings: Settings, transcript: str) -> dict[str, Any]:
-    system = _p("summary_system")
+    system = puah_prompts.SUMMARY_SYSTEM
     chunks = _chunks_by_chars(transcript, settings.summary_max_chars)
     partials = []
     for i, ch in enumerate(chunks, 1):

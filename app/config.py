@@ -64,9 +64,12 @@ class Settings(BaseSettings):
     client_summary_enabled: bool = Field(default=True)
     feedback_enabled: bool = Field(default=True)
 
-    # --- RAG סמנטי (embeddings מקומיים דרך Ollama) ---
+    # --- RAG סמנטי (embeddings מקומיים דרך Ollama + אחסון וקטורי ChromaDB) ---
     # bge-m3: רב-לשוני עם עברית טובה. משיכה:  ollama pull bge-m3
     embed_model: str = Field(default="bge-m3")
+    # Chroma: ריק = embedded (data/chroma/, On-Prem). הגדירו host לשרת Chroma נפרד.
+    chroma_host: str | None = Field(default=None)
+    chroma_port: int = Field(default=8000)
 
     # --- ייצוא Word + הסרת PII (אחרי שמירת התמלול) ---
     # יצירת מסמך Word לכל תמלול ({job_id}.docx)

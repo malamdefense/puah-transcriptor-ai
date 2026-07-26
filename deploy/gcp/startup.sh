@@ -31,14 +31,21 @@ apt-get install -y --no-install-recommends \
     python3 python3-venv python3-pip ffmpeg libsndfile1 curl ca-certificates \
     zstd            # נדרש למתקין של Ollama
 
-# ---------- 2. דרייברי NVIDIA (המתקין הרשמי של GCP) ----------
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-  echo "--- מתקין דרייברי NVIDIA ---"
-  curl -fsSL -o /tmp/install_gpu_driver.py \
-    https://raw.githubusercontent.com/GoogleCloudPlatform/compute-gpu-installation/main/linux/install_gpu_driver.py
-  python3 /tmp/install_gpu_driver.py --force
+# ---------- 2. דרייברי NVIDIA (550+ — Ollama דורש 550, לא ה-535 של מתקין GCP) ----------
+# מתקינים ישירות nvidia-driver-550-server: אחרת Ollama נופל ל-CPU ("driver too old").
+if ! command -v nvidia-smi >/dev/null 2>&1 || \
+   [ "$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | cut -d. -f1)" -lt 550 ] 2>/dev/null; then
+  echo "--- מתקין דרייבר NVIDIA 550 ---"
+  apt-get install -y nvidia-driver-550-server || {
+    # נפילה חזרה למתקין של GCP אם החבילה לא זמינה
+    curl -fsSL -o /tmp/install_gpu_driver.py \
+      https://raw.githubusercontent.com/GoogleCloudPlatform/compute-gpu-installation/main/linux/install_gpu_driver.py
+    python3 /tmp/install_gpu_driver.py --force
+  }
+  # startup-script רץ כ-root בעליית המכונה; טוענים את המודול בלי reboot מלא
+  modprobe nvidia nvidia_uvm 2>/dev/null || true
 fi
-nvidia-smi || { echo "התקנת ה-GPU נכשלה"; exit 1; }
+nvidia-smi || { echo "התקנת ה-GPU נכשלה — ודא reboot"; exit 1; }
 
 # ---------- 3. Ollama (מותקן כשירות systemd) ----------
 if ! command -v ollama >/dev/null 2>&1; then

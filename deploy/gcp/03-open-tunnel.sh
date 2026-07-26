@@ -18,16 +18,23 @@ set -Eeuo pipefail
 VM="${VM:-puah-vm}"
 ZONE="${ZONE:-}"
 
+# גילוי אוטומטי של ה-zone. אם נכשל (למשל שגיאת Gaia id) — אפשר לתת ZONE=... ידנית.
 if [[ -z "$ZONE" ]]; then
-  ZONE="$(gcloud compute instances list --filter="name=$VM" --format='value(zone)' 2>/dev/null | head -1 || true)"
-  [[ -n "$ZONE" ]] || { echo "✗ לא נמצאה מכונה '$VM'. הגדר ZONE=... ידנית."; exit 1; }
+  ZONE="$(gcloud compute instances list --filter="name=$VM" --format='value(zone)' 2>/dev/null \
+          | grep -vi 'error\|gaia\|boundary' | head -1 || true)"
+fi
+if [[ -z "$ZONE" ]]; then
+  echo "⚠ לא הצלחתי לזהות את ה-zone אוטומטית (כנראה בגלל רעש ה-Gaia id)."
+  echo "  הרץ עם zone מפורש, למשל:"
+  echo "     ZONE=us-east1-c bash deploy/gcp/03-open-tunnel.sh"
+  exit 1
 fi
 
 # ודא שהמכונה רצה (Spot עלול להיכבות)
-STATUS="$(gcloud compute instances describe "$VM" --zone="$ZONE" --format='value(status)' 2>/dev/null || true)"
-if [[ "$STATUS" != "RUNNING" ]]; then
+STATUS="$(gcloud compute instances describe "$VM" --zone="$ZONE" --format='value(status)' 2>/dev/null | grep -vi 'error\|gaia\|boundary' || true)"
+if [[ -n "$STATUS" && "$STATUS" != "RUNNING" ]]; then
   echo "⚠ המכונה במצב '$STATUS'. מפעיל…"
-  gcloud compute instances start "$VM" --zone="$ZONE"
+  gcloud compute instances start "$VM" --zone="$ZONE" || true
   echo "  ממתין ~30 שניות לעלייה…"; sleep 30
 fi
 
