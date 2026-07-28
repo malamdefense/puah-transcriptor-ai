@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""פרומפטים להפקת "סיכום ללקוח" ו"משוב ליועץ" עבור מכון פוע"ה.
+"""Prompts for generating "Client Summary" and "Professional Feedback" for Puah.
 
-מבוסס על המסמך "פרומפט aistudio.google.docx". ניתן לערוך כאן את הניסוח כדי לכוונן
-את הפלט — זהו מקור האמת שרץ בפועל. הפלט נועד להידמות לדוגמאות שב-"משוב_שיחות.xlsx".
+Based on the document "Prompt aistudio.google.docx". You can edit the wording here to target
+the output — this is the actual running source. The output is intended to be used as examples in "Professional Feedback_Calls.xlsx".
 """
 
-# --- הסיכום הכללי (תקציר/נקודות/מילות מפתח — מזין גם את הדשבורד) ---
+# --- General Summary (Summary/Key Points/Keywords — also feeds the dashboard) ---
 SUMMARY_SYSTEM = (
     'אתה עוזר מקצועי ודיסקרטי המסכם שיחות בעברית עבור מכון פוע"ה. '
     "השיחות עשויות לכלול תוכן רגיש (רפואי, הלכתי, אישי) — שמור על ניסוח עובדתי ומכובד. "

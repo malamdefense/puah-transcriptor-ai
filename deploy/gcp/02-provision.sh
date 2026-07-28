@@ -15,7 +15,7 @@
 set -Eeuo pipefail
 
 # ---------- הגדרות (ניתן לדרוס עם משתני סביבה) ----------
-LLM_MODEL="${LLM_MODEL:-gemma4:12b}"
+# ספק ה-LLM המקומי הוסר — הסיכום מופק ב-Gemini (ענן). Ollama נדרש ל-embeddings בלבד.
 EMBED_MODEL="${EMBED_MODEL:-bge-m3}"
 CUDA_INDEX="${CUDA_INDEX:-https://download.pytorch.org/whl/cu128}"   # L4=Ada → cu128
 SETUP_PII="${SETUP_PII:-1}"          # 0 = דלג על הסרת PII
@@ -38,7 +38,7 @@ trap 'die "כשל בשורה $LINENO. עצור, קרא את השגיאה למע�
 # =============================================================================
 say "מערכת תמלול פוע\"ה — התקנה על GCP VM"
 echo "  פרויקט: $PROJECT_DIR"
-echo "  משתמש : $RUN_USER   |  מודל LLM: $LLM_MODEL   |  embed: $EMBED_MODEL"
+echo "  משתמש : $RUN_USER   |  סיכום: Gemini (ענן)   |  embed: $EMBED_MODEL"
 hr
 
 # ---------- שלב 0: שמירות (guard rails) ----------
@@ -110,13 +110,13 @@ if [[ "${DRV_VER:-0}" -lt "$MIN_DRV" ]]; then
 fi
 ok "דרייבר NVIDIA $DRV_VER (>=${MIN_DRV}, תואם ל-Ollama)"
 
-# ---------- שלב 3: Ollama (גרסה עדכנית — נדרש ל-gemma4) ----------
+# ---------- שלב 3: Ollama (נדרש ל-embeddings) ----------
 say "שלב 3/9 — Ollama"
 if ! command -v ollama >/dev/null 2>&1; then
   echo "  מתקין Ollama…"
   curl -fsSL https://ollama.com/install.sh | sh
 fi
-# חשוב: לרענן את השירות כדי שירוץ הבינארי החדש (אחרת gemma4 מחזיר 412).
+# חשוב: לרענן את השירות כדי שירוץ הבינארי החדש.
 sudo systemctl enable ollama >/dev/null 2>&1 || true
 sudo systemctl daemon-reload
 sudo systemctl restart ollama
@@ -135,8 +135,7 @@ if [[ -z "$HF_TOKEN" || "$HF_TOKEN" == hf_xxxx* ]]; then
   hr
   die "חסר PUAH_HF_TOKEN ב-.env. ערוך:  nano .env  (טוקן מ-https://huggingface.co/settings/tokens), ואז הרץ שוב."
 fi
-# עדכון שם המודל בהתאם להגדרות הסקריפט
-sed -i "s|^PUAH_LLM_MODEL=.*|PUAH_LLM_MODEL=${LLM_MODEL}|"   .env
+# עדכון שם מודל ה-embedding בהתאם להגדרות הסקריפט
 sed -i "s|^PUAH_EMBED_MODEL=.*|PUAH_EMBED_MODEL=${EMBED_MODEL}|" .env
 ok "טוקן HF מוגדר (${#HF_TOKEN} תווים)"
 
@@ -160,8 +159,8 @@ fi
 ok "torch על GPU: $("$VENV_PY" -c 'import torch;print(torch.__version__, torch.cuda.get_device_name(0))')"
 
 # ---------- שלב 7: משיכת מודלים ----------
-say "שלב 7/9 — משיכת מודלים (gemma4 ~10 דק' בפעם הראשונה)"
-for M in "$LLM_MODEL" "$EMBED_MODEL"; do
+say "שלב 7/9 — משיכת מודל ה-embedding"
+for M in "$EMBED_MODEL"; do
   if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$M"; then
     ok "  $M כבר קיים"
   else
@@ -171,7 +170,7 @@ done
 
 # אימות ש-Ollama מריץ את ה-LLM על ה-GPU (ולא נופל ל-CPU בשקט → סיכומים איטיים/timeout)
 say "  מאמת ש-Ollama על ה-GPU…"
-curl -fsS localhost:11434/api/generate -d "{\"model\":\"$LLM_MODEL\",\"prompt\":\"שלום\",\"stream\":false,\"options\":{\"num_predict\":8}}" >/dev/null 2>&1 || true
+curl -fsS localhost:11434/api/embed -d "{\"model\":\"$EMBED_MODEL\",\"input\":\"שלום\"}" >/dev/null 2>&1 || true
 VRAM_B="$(curl -fsS localhost:11434/api/ps 2>/dev/null | "$VENV_PY" -c 'import sys,json;m=json.load(sys.stdin).get("models",[]);print(m[0]["size_vram"] if m else 0)' 2>/dev/null || echo 0)"
 if [[ "${VRAM_B:-0}" -gt 0 ]]; then
   ok "  Ollama על ה-GPU (VRAM: $(( VRAM_B / 1000000000 )).$(( (VRAM_B/100000000) % 10 )) GB)"

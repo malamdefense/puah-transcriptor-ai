@@ -1,13 +1,11 @@
-"""מיזוג תמלול + זיהוי דוברים לתמלול אחיד עם ייחוס דובר לכל מילה/קטע.
+"""Merge transcript + speaker diarization into a unified transcript with speaker references for each word/segment.
 
-הגישה: לכל מילה (או קטע אם אין חותמות-זמן ברמת המילה) מוצאים את תור הדיבור
-של הדובר עם החפיפה הזמנית הגדולה ביותר. לאחר מכן ממזגים מילים רצופות של אותו
-דובר לקטעי תצוגה נוחים, תוך שבירה על מעבר דובר או על שתיקה ארוכה.
+The approach: for each word (or segment if there are no time stamps at the word level) we find the speaker turn with the largest temporal overlap. Then we merge consecutive words of the same speaker into convenient display segments, breaking on speaker change or long gaps.
 """
 
 from __future__ import annotations
 
-# שתיקה ארוכה מ-1.2 שניות שוברת קטע גם אם הדובר זהה
+# Long gap of 1.2 seconds breaks a segment even if the speaker is the same
 _GAP_SPLIT_SEC = 1.2
 
 
@@ -16,9 +14,9 @@ def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
 
 
 def _speaker_for_interval(start: float, end: float, turns: list[dict]) -> str | None:
-    """הדובר עם החפיפה הגדולה ביותר לקטע [start, end].
+    """The speaker with the largest overlap for the interval [start, end].
 
-    אם אין חפיפה כלל — בוחר את התור הקרוב ביותר במרכז הזמן.
+    If there is no overlap at all — choose the nearest turn in the center of time.
     """
     if not turns:
         return None
@@ -34,7 +32,7 @@ def _speaker_for_interval(start: float, end: float, turns: list[dict]) -> str | 
     if best_speaker is not None:
         return best_speaker
 
-    # ללא חפיפה: התור הקרוב ביותר למרכז הקטע
+    # Without overlap: the nearest turn in the center of the interval
     mid = (start + end) / 2.0
     nearest = min(
         turns,
@@ -44,7 +42,7 @@ def _speaker_for_interval(start: float, end: float, turns: list[dict]) -> str | 
 
 
 def _assign_words(asr_segments: list[dict], turns: list[dict]) -> list[dict]:
-    """משטח את הקטעים לרשימת מילים עם דובר. נופל לרמת קטע אם אין מילים."""
+    """Flatten the segments into a list of words with speaker. Falls to segment level if there are no words."""
     words: list[dict] = []
     for seg in asr_segments:
         seg_words = seg.get("words") or []
@@ -55,7 +53,7 @@ def _assign_words(asr_segments: list[dict], turns: list[dict]) -> list[dict]:
                     {"start": w["start"], "end": w["end"], "word": w["word"], "speaker": spk}
                 )
         else:
-            # אין חותמות-זמן ברמת המילה — מתייחסים לקטע כיחידה אחת
+            # No time stamps at the word level — treat the segment as a single unit
             spk = _speaker_for_interval(seg["start"], seg["end"], turns)
             words.append(
                 {
@@ -69,16 +67,16 @@ def _assign_words(asr_segments: list[dict], turns: list[dict]) -> list[dict]:
 
 
 def merge(asr_segments: list[dict], turns: list[dict]) -> tuple[list[dict], list[str]]:
-    """מחזיר (segments, speaker_ids).
+    """Return (segments, speaker_ids).
 
-    segments — קטעי תצוגה: {start, end, speaker, text, words:[...]}.
-    speaker_ids — רשימת מזהי הדוברים הייחודיים לפי סדר הופעתם.
+    segments — display segments: {start, end, speaker, text, words:[...]}.
+    speaker_ids — list of unique speaker IDs in the order of their appearance.
     """
     words = _assign_words(asr_segments, turns)
     if not words:
         return [], []
 
-    # מילוי דוברים חסרים (אם לא נמצא אף תור) — שיוך לשכן הקודם/הבא
+    # Fill missing speakers (if no turn is found) — assign to the previous/next speaker
     fallback = next((w["speaker"] for w in words if w["speaker"]), "SPEAKER_00")
     for w in words:
         if not w["speaker"]:
@@ -109,7 +107,7 @@ def merge(asr_segments: list[dict], turns: list[dict]) -> tuple[list[dict], list
     if cur is not None:
         segments.append(cur)
 
-    # בניית טקסט לכל קטע + סדר דוברים יציב
+    # Build text for each segment + stable speaker order
     speaker_order: list[str] = []
     for seg in segments:
         seg["text"] = " ".join(w["word"] for w in seg["words"]).strip()

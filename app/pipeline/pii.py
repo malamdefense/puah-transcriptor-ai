@@ -1,10 +1,9 @@
-"""הסרת פרטים מזהים (PII) מתמלול, באמצעות HebSafeHarbor.
+"""Redact PII (Personally Identifiable Information) from the transcript, using HebSafeHarbor.
 
-HebSafeHarbor דורש pydantic<2 / spaCy 3.2 שמתנגשים עם האפליקציה (pydantic v2),
-לכן הוא מותקן בסביבה וירטואלית מבודדת (ברירת מחדל: .venv-pii) ונקרא כתת-תהליך
-דרך app/pii_runner.py. כך אנו מקבלים את היכולת בלי לשבור את שאר המערכת.
+HebSafeHarbor requires pydantic<2 / spaCy 3.2 which conflicts with the application (pydantic v2),
+so it is installed in a virtual environment (default: .venv-pii) and called as a subprocess via app/pii_runner.py. This way we get the capability without breaking the rest of the system.
 
-deidentify_result מחזיר עותק חדש של התמלול שבו טקסט הקטעים והסיכום עברו ניקוי.
+deidentify_result returns a new copy of the transcript where the segment texts and summary have been redacted.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from typing import Any
 
 from ..config import Settings
 
-# שורש הריפו: app/pipeline/pii.py -> pipeline -> app -> root
+# Root of the repo: app/pipeline/pii.py -> pipeline -> app -> root
 ROOT = Path(__file__).resolve().parent.parent.parent
 RUNNER = ROOT / "app" / "pii_runner.py"
 
@@ -40,7 +39,7 @@ def _run_pii(settings: Settings, texts: list[str]) -> list[str]:
     py = pii_python(settings)
     if not py.exists():
         raise PIIError(
-            f"סביבת ה-PII לא נמצאה ({py}). הריצו: python rebuild.py (או הקימו את {settings.pii_venv} "
+            f"PII environment not found ({py}). Run: python rebuild.py (or create {settings.pii_venv} "
             "מ-requirements-pii.txt)."
         )
     try:
@@ -53,27 +52,35 @@ def _run_pii(settings: Settings, texts: list[str]) -> list[str]:
             timeout=settings.pii_timeout_sec,
         )
     except subprocess.TimeoutExpired as exc:
-        raise PIIError(f"הסרת ה-PII חרגה מזמן הקצוב ({settings.pii_timeout_sec}s)") from exc
+        raise PIIError(f"PII timed out ({settings.pii_timeout_sec}s)") from exc
 
     if proc.returncode != 0:
         tail = (proc.stderr or "").strip()[-600:]
-        raise PIIError(f"רץ ה-PII נכשל (קוד {proc.returncode}): {tail}")
+        raise PIIError(f"PII failed (code {proc.returncode}): {tail}")
 
     try:
         result = json.loads(proc.stdout)
         out = result["texts"]
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise PIIError(f"פלט בלתי צפוי מרץ ה-PII: {exc}") from exc
+        raise PIIError(f"Unexpected output from PII: {exc}") from exc
 
     if len(out) != len(texts):
-        raise PIIError("מספר הקטעים שחזרו מרץ ה-PII אינו תואם לקלט")
+        raise PIIError("Number of segments returned from PII does not match the input")
     return out
 
 
-def deidentify_result(settings: Settings, result: dict[str, Any]) -> dict[str, Any]:
-    """מחזיר עותק חדש של התמלול שעבר הסרת PII (קטעים + סיכום).
+def redact_texts(settings: Settings, texts: list[str]) -> list[str]:
+    """Redact PII from a list of raw strings (e.g. LLM messages before going to a third-party cloud provider).
 
-    מבצע קריאת subprocess *אחת* לכל הטקסטים יחד (כדי לטעון את המודל פעם אחת בלבד).
+    Public wrapper around _run_pii — the entry point of GeminiModelProvider.
+    """
+    return _run_pii(settings, texts)
+
+
+def deidentify_result(settings: Settings, result: dict[str, Any]) -> dict[str, Any]:
+    """Return a new copy of the transcript where the segment texts and summary have been redacted.
+
+    Performs a single subprocess call for all the texts together (to load the model once only).
     """
     segments = result.get("segments", [])
     seg_texts = [s.get("text", "") for s in segments]
@@ -95,7 +102,7 @@ def deidentify_result(settings: Settings, result: dict[str, Any]) -> dict[str, A
 
     flat = seg_texts + sum_summary + sum_keypts + sum_actions + sum_topics + sum_keywords + extra
     if not any(t and str(t).strip() for t in flat):
-        raise PIIError("התמלול ריק — אין מה לנקות.")
+        raise PIIError("The transcript is empty — nothing to clean.")
 
     anon = _run_pii(settings, flat)
 

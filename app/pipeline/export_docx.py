@@ -1,4 +1,4 @@
-"""ייצוא התמלול למסמך Word‏ (.docx) עם פריסה מימין-לשמאל (עברית)."""
+"""Export the transcript to a Word document (.docx) with right-to-left (Hebrew) layout."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .export import _fmt_clock, _speaker_name
 
 
 def _rtl(paragraph) -> None:
-    """הופך פסקה ל-RTL ומיישר לימין (תקין לעברית ב-Word)."""
+    """Make a paragraph RTL and align it to the right (valid for Hebrew in Word)."""
     pPr = paragraph._p.get_or_add_pPr()
     bidi = OxmlElement("w:bidi")
     bidi.set(qn("w:val"), "1")
@@ -118,7 +118,7 @@ def build_docx(
     title: str,
     deidentified: bool = False,
 ) -> Path:
-    """בונה מסמך Word מתמלול ושומר ל-path. מחזיר את הנתיב."""
+    """Build a Word document from the transcript and save it to path. Return the path."""
     doc = _build_document(result, title, deidentified)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,7 +127,7 @@ def build_docx(
 
 
 def build_docx_bytes(result: dict[str, Any], title: str, deidentified: bool = False) -> bytes:
-    """בונה מסמך Word ומחזיר את תוכנו כ-bytes (להורדה ישירה)."""
+    """Build a Word document and return its content as bytes (for direct download)."""
     import io
 
     doc = _build_document(result, title, deidentified)

@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""רץ הסרת-PII עצמאי — מורץ ע"י הפייתון של .venv-pii (לא של האפליקציה).
+"""Run PII removal independently — run by the Python in .venv-pii (not the application's).
 
-מייבא אך ורק את HebSafeHarbor ו-stdlib, כדי שלא ייגע בתלויות האפליקציה
-(pydantic v2 וכו'). קורא JSON {"texts": [...]} מ-stdin, מחזיר {"texts": [...]}
-מנוקה ל-stdout. טוען את מנוע HebSafeHarbor פעם אחת (הטעינה היקרה).
+Import only HebSafeHarbor and stdlib, to avoid interfering with the application's dependencies
+(pydantic v2 and others). Reads JSON {"texts": [...]} from stdin, returns {"texts": [...]} to stdout.
+Loads HebSafeHarbor once (the expensive load).
 
-שימוש (ע"י pii.py כתת-תהליך):
+Usage (by pii.py as a subprocess):
     .venv-pii/python app/pii_runner.py  < input.json  > output.json
 """
 
 import json
 import sys
 
-# תאימות Python 3.10+: HebSafeHarbor 0.1.1 משתמש ב-`from collections import Set`,
-# כינוי שהוסר ב-Python 3.10. משחזרים את הכינויים מ-collections.abc לפני הייבוא,
-# כדי לתמוך ב-Python 3.10 (וגם 3.9/3.8). פתרון רפרודוקטיבי שאינו נוגע בקובצי הספרייה.
+# Python 3.10+ compatibility: HebSafeHarbor 0.1.1 uses `from collections import Set`,
+# a name that was removed in Python 3.10. Restore the names from collections.abc before importing,
+# to support Python 3.10 (and 3.9/3.8). A non-invasive solution that doesn't touch the library files.
 import collections
 import collections.abc as _abc
 
@@ -28,7 +28,7 @@ for _name in (
 
 
 def main() -> int:
-    # קריאת stdin כ-UTF-8 במפורש (לא תלוי בקידוד ברירת המחדל של Windows/locale)
+    # Read stdin as UTF-8 explicitly (not dependent on the default encoding of Windows/locale)
     try:
         raw = sys.stdin.buffer.read().decode("utf-8")
         data = json.loads(raw)
@@ -47,22 +47,20 @@ def main() -> int:
         print(f"hebsafeharbor not available: {exc}", file=sys.stderr)
         return 3
 
-    hsh = HebSafeHarbor()  # טעינת המודל (he_ner_news_trf) — יקר, פעם אחת
+    hsh = HebSafeHarbor()
 
-    # HebSafeHarbor עלול להיכשל על מחרוזת ריקה — נשלח רווח ונחזיר ריק חזרה.
     nonempty_idx = [i for i, t in enumerate(texts) if t and str(t).strip()]
     docs = [{"text": str(texts[i])} for i in nonempty_idx]
 
-    anon = list(texts)  # ברירת מחדל: ערכים ריקים נשארים כפי שהם
+    anon = list(texts)
     if docs:
         output = hsh(docs)
         for pos, out in zip(nonempty_idx, output):
             try:
                 anon[pos] = out.anonymized_text.text
-            except Exception:  # noqa: BLE001 — אם משהו לא צפוי, עדיף ריק מאשר טקסט מקורי
+            except Exception:
                 anon[pos] = ""
 
-    # כתיבת stdout כ-UTF-8 במפורש
     sys.stdout.buffer.write(json.dumps({"texts": anon}, ensure_ascii=False).encode("utf-8"))
     sys.stdout.buffer.flush()
     return 0

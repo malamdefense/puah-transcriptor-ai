@@ -1,7 +1,7 @@
-"""מערכת תמלול וזיהוי דוברים בעברית — מכון פוע"ה.
+"""Hebrew transcription and speaker identification system — Puah Institute.
 
-Eco System לקבלת הקלטות mp4, תמלול בעברית וזיהוי דוברים (diarization),
-כולה רצה On-Prem ללא שליחת נתונים החוצה.
+Ecosystem for receiving mp4 recordings, Hebrew transcription and speaker identification (diarization),
+all running On-Prem without sending data out.
 """
 
 __version__ = "1.0.0"

@@ -1,7 +1,7 @@
-"""זיהוי דוברים (speaker diarization) באמצעות pyannote.audio.
+"""Speaker diarization using pyannote.audio.
 
-המודל gated ב-HuggingFace — נדרש לאשר את תנאי השימוש פעם אחת וליצור טוקן.
-ראו הוראות ב-README.
+The gated model in HuggingFace — you need to accept the terms of use once and create a token.
+See instructions in README.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ class DiarizationError(RuntimeError):
 
 
 class Diarizer:
-    """עוטף את pipeline הזיהוי של pyannote. נטען עצלן ונשאר תושב בזיכרון."""
+    """Wrap the diarization pipeline of pyannote. Load lazily and keep in memory."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -36,17 +36,17 @@ class Diarizer:
             from pyannote.audio import Pipeline  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover
             raise DiarizationError(
-                "pyannote.audio אינו מותקן. הריצו: pip install pyannote.audio"
+                "pyannote.audio is not installed. Run: pip install pyannote.audio"
             ) from exc
 
         if not self.settings.hf_token:
             raise DiarizationError(
-                "חסר טוקן HuggingFace (PUAH_HF_TOKEN). יש לאשר את תנאי השימוש של "
+                "Missing HuggingFace token (PUAH_HF_TOKEN). You need to accept the terms of use of "
                 f"'{self.settings.diarization_model}' ושל 'pyannote/segmentation-3.0' "
-                "ב-HuggingFace וליצור טוקן קריאה. ראו README."
+                "in HuggingFace and create a token. See README."
             )
 
-        # pyannote.audio החדש משתמש ב-token=; ישן יותר ב-use_auth_token=. תומכים בשניהם.
+        # pyannote.audio new uses token=; old uses use_auth_token=. Both are supported.
         try:
             pipeline = Pipeline.from_pretrained(
                 self.settings.diarization_model, token=self.settings.hf_token
@@ -57,10 +57,10 @@ class Diarizer:
             )
         if pipeline is None:
             raise DiarizationError(
-                "טעינת מודל הזיהוי נכשלה — ודאו שאישרתם את תנאי השימוש וש-PUAH_HF_TOKEN תקין."
+                "Model loading failed — make sure you accepted the terms of use and PUAH_HF_TOKEN is valid."
             )
 
-        # העברה ל-GPU אם זמין
+        # Transfer to GPU if available
         try:
             import torch  # noqa: PLC0415
 
@@ -76,9 +76,9 @@ class Diarizer:
         audio_path: Path,
         num_speakers: Optional[int] = None,
     ) -> list[dict]:
-        """מחזיר רשימת תורות דיבור: {start, end, speaker}.
+        """Return a list of turns: {start, end, speaker}.
 
-        num_speakers — רמז מספר הדוברים (None = זיהוי אוטומטי).
+        num_speakers — hint for the number of speakers (None = automatic detection).
         """
         self.load()
         assert self._pipeline is not None
@@ -92,11 +92,11 @@ class Diarizer:
 
     @staticmethod
     def _load_audio(audio_path: Path):
-        """טוען את ה-WAV לזיכרון ומחזיר dict ל-pyannote, לעקיפת torchcodec.
+        """Load the WAV into memory and return a dict for pyannote, bypassing torchcodec.
 
-        torchcodec (תלות של pyannote) נכשל בטעינה ב-Windows כשאין DLLs של FFmpeg
-        בגרסת shared. אנחנו כבר מחלצים WAV עם ffmpeg, ו-soundfile קורא אותו ישירות
-        (libsndfile, ללא FFmpeg). אם soundfile לא זמין — נופלים חזרה לנתיב הקובץ.
+        torchcodec (pyannote dependency) fails to load on Windows when there are no DLLs of FFmpeg
+        in the shared version. We already extract WAV with ffmpeg, and soundfile reads it directly
+        (libsndfile, without FFmpeg). If soundfile is not available — we fall back to the file path.
         """
         try:
             import soundfile as sf  # noqa: PLC0415
@@ -110,7 +110,7 @@ class Diarizer:
 
     @staticmethod
     def _collect(output) -> list[dict]:
-        # pyannote ישן מחזיר Annotation ישירות; חדש מחזיר DiarizeOutput עם .speaker_diarization
+        # pyannote old returns Annotation directly; new returns DiarizeOutput with .speaker_diarization
         annotation = output
         if not hasattr(annotation, "itertracks"):
             for attr in ("speaker_diarization", "diarization", "annotation"):
@@ -120,7 +120,7 @@ class Diarizer:
                     break
         if not hasattr(annotation, "itertracks"):
             raise DiarizationError(
-                f"פלט זיהוי דוברים בלתי מוכר: {type(output).__name__} (אין itertracks)"
+                f"Unknown diarization output: {type(output).__name__} (no itertracks)"
             )
 
         turns: list[dict] = []

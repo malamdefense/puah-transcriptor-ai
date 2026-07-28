@@ -20,7 +20,7 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
-// ---------- עזרי זמן ----------
+// ---------- Helper functions ----------
 function fmtClock(sec) {
   sec = Math.max(0, Math.round(sec || 0));
   const h = Math.floor(sec / 3600);
@@ -45,24 +45,24 @@ function speakerColor(id, speakerIds) {
   return SPEAKER_COLORS[(idx >= 0 ? idx : 0) % SPEAKER_COLORS.length];
 }
 
-// ---------- בריאות ----------
+// ---------- Health check ----------
 async function checkHealth() {
   const el = $("health");
   try {
     const r = await fetch(`${API}/health`);
     if (!r.ok) throw new Error();
     await r.json();
-    // מחובר — אין צורך להציג דבר
+    // Connected — no need to show anything
     el.className = "health hidden";
     el.textContent = "";
   } catch {
-    // רק כשמנותק — מציגים אזהרה
+    // Only when disconnected — show a warning
     el.textContent = "⚠ אין חיבור לשרת";
     el.className = "health bad";
   }
 }
 
-// ---------- בחירת קובץ ----------
+// ---------- File selection ----------
 function setupUpload() {
   const dz = $("dropzone");
   const input = $("fileInput");
@@ -139,14 +139,14 @@ function startUpload() {
   xhr.send(fd);
 }
 
-// ---------- רשימת משימות ----------
+// ---------- Job list ----------
 async function refreshJobs() {
   try {
     const r = await fetch(`${API}/jobs`);
     state.jobs = await r.json();
     renderJobs();
   } catch {
-    /* מתעלמים — ננסה שוב בפעימה הבאה */
+    /* Ignore — will try again in the next poll */
   }
 }
 
@@ -202,12 +202,12 @@ async function deleteJob(id) {
   refreshJobs();
 }
 
-// ---------- בחירת משימה והצגת תמלול ----------
+// ---------- Job selection and transcription display ----------
 async function selectJob(id) {
   hideDashboard();
   hideSettings();
   state.currentJobId = id;
-  state.result = null; // ניקוי תוצאה קודמת כדי שטעינה אוטומטית בפעימה תעבוד
+  state.result = null; // Clear previous result to allow automatic loading on the next poll
   renderJobs();
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
@@ -261,7 +261,7 @@ function renderTranscript() {
   $("tMeta").textContent =
     `${res.num_speakers} דוברים · משך ${fmtDuration(res.duration_sec)} · ${res.segments.length} קטעים`;
 
-  // קישורי ייצוא
+  // Export links
   $("expWord").href = `${API}/jobs/${res.job_id}/export?format=docx`;
   $("expTxt").href = `${API}/jobs/${res.job_id}/export?format=txt`;
   $("expSrt").href = `${API}/jobs/${res.job_id}/export?format=srt`;
@@ -270,17 +270,17 @@ function renderTranscript() {
   $("expPiiWord").href = `${API}/jobs/${res.job_id}/pii?format=docx`;
   $("expPiiJson").href = `${API}/jobs/${res.job_id}/pii?format=json`;
 
-  // סיכום אוטומטי + תוצרי פוע"ה (סיכום ללקוח, משוב ליועץ)
+  // Automatic summary + PUAH products (client summary, feedback to the consultant)
   renderSummary(res);
   renderPuahOutputs(res);
 
-  // נגן
+  // Player
   const player = $("player");
   player.src = `${API}/jobs/${res.job_id}/media`;
 
   const speakerIds = Object.keys(res.speakers);
 
-  // מקרא דוברים עם עריכת שמות
+  // Speaker legend with name editing
   const legend = $("speakerLegend");
   legend.innerHTML = "";
   for (const sid of speakerIds) {
@@ -296,16 +296,16 @@ function renderTranscript() {
     legend.appendChild(chip);
   }
 
-  // איפוס חיפוש פנימי ובניית הקטעים
+  // Reset internal search and build segments
   $("findInput").value = "";
   state.findQuery = "";
   renderSegments("");
 
-  // הדגשת הקטע המתנגן
+  // Highlight the currently playing segment
   player.ontimeupdate = () => highlightSegment(player.currentTime);
 }
 
-// בניית קטעי התמלול, עם הדגשה אופציונלית של מונחי חיפוש פנימי
+// Build segments, with optional internal search highlighting
 function renderSegments(query) {
   const res = state.result;
   if (!res) return;
@@ -361,7 +361,7 @@ async function saveSpeakerNames() {
   }
 }
 
-// ---------- סיכום אוטומטי ----------
+// ---------- Automatic summary ----------
 function renderSummary(res) {
   const el = $("summarySection");
   const s = res.summary;
@@ -396,7 +396,7 @@ function renderSummary(res) {
     </div>`;
 
   $("genSummaryBtn").onclick = generateSummary;
-  // לחיצה על נושא/מילת מפתח -> חיפוש בתוך התמלול
+  // Clicking on a topic/keyword -> internal search
   el.querySelectorAll(".tag").forEach((t) =>
     t.addEventListener("click", () => {
       const term = t.dataset.term;
@@ -461,7 +461,7 @@ async function generateSummary() {
   }
 }
 
-// ---------- חיפוש פנימי (בתוך התמלול) ----------
+// ---------- Internal search (within the transcription) ----------
 function setupFind() {
   $("findInput").addEventListener("input", (e) => doFind(e.target.value));
   $("findNext").addEventListener("click", () => navigateFind(1));
@@ -496,7 +496,7 @@ function navigateFind(dir) {
   $("findCount").textContent = `${state.findIndex + 1} / ${marks.length}`;
 }
 
-// ---------- חיפוש גלובלי (בכל התמלולים) ----------
+// ---------- Global search (across all transcriptions) ----------
 function setupGlobalSearch() {
   const input = $("globalSearch");
   input.addEventListener("input", () => {
@@ -542,7 +542,7 @@ async function runGlobalSearch(q) {
 
 async function openSearchResult(jobId, start, query) {
   await selectJob(jobId);
-  // המתנה קצרה לרינדור התמלול, ואז קפיצה לזמן + הדגשה
+  // Short delay for rendering the transcription, then jump to time + highlight
   setTimeout(() => {
     if (state.result && state.result.job_id === jobId) {
       const player = $("player");
@@ -556,7 +556,7 @@ async function openSearchResult(jobId, start, query) {
   }, 250);
 }
 
-// ---------- הדגשת מונחים ----------
+// ---------- Highlighting terms ----------
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -580,12 +580,12 @@ function escapeHtml(s) {
   );
 }
 
-// ---------- פעימת רענון ----------
+// ---------- Polling cycle ----------
 function startPolling() {
   state.pollTimer = setInterval(async () => {
     const hadProcessing = state.jobs.some((j) => ["queued", "processing"].includes(j.status));
     await refreshJobs();
-    // אם המשימה הנוכחית הסתיימה זה עתה — נטען את התוצאה
+    // If the current job just finished — load the result
     const cur = state.jobs.find((j) => j.id === state.currentJobId);
     if (cur && cur.status === "done" && !state.result) await loadResult(cur.id);
     if (cur && cur.status === "processing") showProcessing(cur);
@@ -593,7 +593,7 @@ function startPolling() {
   }, 2500);
 }
 
-// ---------- דשבורד סטטיסטיקות ----------
+// ---------- Statistics dashboard ----------
 function hideDashboard() {
   $("dashboardView").classList.add("hidden");
   $("dashBtn").classList.remove("active");
@@ -682,14 +682,14 @@ function renderCloud(id, items) {
     .join("");
   el.querySelectorAll(".kw-item").forEach((it) =>
     it.addEventListener("click", () => {
-      toggleDashboard(); // סגירת הדשבורד
+      toggleDashboard(); // Close the dashboard
       $("globalSearch").value = it.dataset.term;
       runGlobalSearch(it.dataset.term);
     })
   );
 }
 
-// ---------- הגדרות: פרומפטים + לוגואים ----------
+// ---------- Settings: prompts + branding ----------
 const _cap = (s) => s[0].toUpperCase() + s.slice(1);
 
 function hideSettings() {
@@ -706,6 +706,7 @@ function toggleSettings() {
     $("settingsBtn").classList.add("active");
     loadPrompts();
     loadBrandingEditor();
+    loadSecrets();
   } else {
     hideSettings();
     if (state.currentJobId) selectJob(state.currentJobId);
@@ -741,7 +742,7 @@ function renderPrompts(prompts) {
         <button class="btn ghost pf-reset" data-key="${key}">שחזר ברירת מחדל</button>
         <span class="pf-saved" data-key="${key}"></span>
       </div>`;
-    f.querySelector("textarea").value = p.value; // ערך גולמי (ללא escape ב-value)
+    f.querySelector("textarea").value = p.value;
     el.appendChild(f);
   }
   el.querySelectorAll(".pf-save").forEach((b) => b.addEventListener("click", () => savePrompt(b.dataset.key)));
@@ -765,6 +766,43 @@ async function savePrompt(key) {
 async function resetPrompt(key) {
   await fetch(`${API}/prompts/reset?key=${encodeURIComponent(key)}`, { method: "POST" });
   loadPrompts();
+}
+
+// ---------- API keys (override .env) ----------
+
+async function loadSecrets() {
+  const st = $("geminiKeyStatus");
+  try {
+    const d = await (await fetch(`${API}/secrets`)).json();
+    const s = (d.secrets || {}).gemini_api_key || {};
+    if (s.source === "ui") st.innerHTML = `<b class="ok">מוגדר מהממשק</b> (${escapeHtml(s.masked || "")}) · דורס את ‎.env‎`;
+    else if (s.source === "env") st.innerHTML = `מוגדר מקובץ ‎.env‎ (${escapeHtml(s.masked || "")})`;
+    else st.innerHTML = `<b class="warn">לא מוגדר</b> — נדרש רק אם עוברים למודל חיצוני`;
+  } catch {
+    st.textContent = "שגיאה בטעינת מצב המפתח";
+  }
+}
+
+async function saveSecret() {
+  const input = $("geminiKeyInput");
+  const st = $("geminiKeyStatus");
+  const value = input.value.trim();
+  if (!value) { st.textContent = "יש להזין מפתח"; return; }
+  try {
+    const r = await fetch(`${API}/secrets/gemini_api_key`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    if (r.ok) { input.value = ""; loadSecrets(); }
+    else { const d = await r.json().catch(() => ({})); st.textContent = d.detail || "שמירה נכשלה"; }
+  } catch { st.textContent = "שמירה נכשלה"; }
+}
+
+async function clearSecret() {
+  await fetch(`${API}/secrets/gemini_api_key`, { method: "DELETE" });
+  $("geminiKeyInput").value = "";
+  loadSecrets();
 }
 
 async function loadBrandingEditor() {
@@ -796,7 +834,7 @@ async function removeLogo(side) {
   applyBranding();
 }
 
-// הצגת הלוגואים בכותרת
+// Display the logos in the title
 async function applyBranding() {
   try {
     const st = await (await fetch(`${API}/branding`)).json();
@@ -814,6 +852,8 @@ function setupSettings() {
     await fetch(`${API}/prompts/reset`, { method: "POST" });
     loadPrompts();
   });
+  $("geminiKeySave").addEventListener("click", saveSecret);
+  $("geminiKeyClear").addEventListener("click", clearSecret);
   document.querySelectorAll("[data-logo]").forEach((b) => {
     const side = b.dataset.logo;
     if (b.dataset.act === "upload") b.addEventListener("click", () => $(`logo${_cap(side)}Input`).click());
@@ -824,7 +864,7 @@ function setupSettings() {
   );
 }
 
-// ---------- אתחול ----------
+// ---------- Initialization ----------
 checkHealth();
 setupUpload();
 setupFind();

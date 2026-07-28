@@ -1,7 +1,7 @@
-"""חילוץ והמרת אודיו מ-mp4 באמצעות ffmpeg.
+"""Extract and convert audio from mp4 using ffmpeg.
 
-גם Whisper וגם pyannote עובדים הכי טוב על WAV מונו ב-16kHz, אז אנחנו ממירים פעם
-אחת ומשתמשים באותו קובץ בשני השלבים.
+Both Whisper and pyannote work best on mono WAV at 16kHz, so we convert once
+and use the same file in both steps.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ def _ffmpeg_bin() -> str:
     path = shutil.which("ffmpeg")
     if not path:
         raise FFmpegError(
-            "ffmpeg לא נמצא ב-PATH. התקן ffmpeg (לדוגמה: winget install Gyan.FFmpeg "
-            "או choco install ffmpeg) והפעל מחדש."
+        "ffmpeg is not in PATH. Install ffmpeg (for example: winget install Gyan.FFmpeg "
+        "or choco install ffmpeg) and restart."
         )
     return path
 
@@ -30,14 +30,14 @@ def _ffprobe_bin() -> str | None:
 
 
 def extract_audio(src: Path, dst: Path) -> None:
-    """ממיר קובץ וידאו/אודיו ל-WAV מונו 16kHz (PCM 16-bit)."""
+    """Convert video/audio file to 16kHz mono WAV (16-bit PCM)."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         _ffmpeg_bin(),
         "-y",
         "-i", str(src),
-        "-vn",            # ללא וידאו
-        "-ac", "1",       # מונו
+        "-vn",            # no video
+        "-ac", "1",       # mono
         "-ar", "16000",   # 16kHz
         "-acodec", "pcm_s16le",
         str(dst),
@@ -45,15 +45,15 @@ def extract_audio(src: Path, dst: Path) -> None:
     proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise FFmpegError(
-            f"חילוץ האודיו נכשל (קוד {proc.returncode}).\n"
+            f"Audio extraction failed (code {proc.returncode}).\n"
             f"{proc.stderr[-1500:]}"
         )
     if not dst.exists() or dst.stat().st_size == 0:
-        raise FFmpegError("חילוץ האודיו הסתיים אך לא נוצר קובץ אודיו תקין.")
+        raise FFmpegError("Audio extraction finished but no valid audio file was created.")
 
 
 def get_duration(path: Path) -> float:
-    """משך הקובץ בשניות (0.0 אם לא ניתן לקבוע)."""
+    """Duration of the file in seconds (0.0 if not determinable)."""
     ffprobe = _ffprobe_bin()
     if not ffprobe:
         return 0.0

@@ -283,6 +283,18 @@ mark.current { background: #ff9a3c; box-shadow: 0 0 0 2px rgba(255,154,60,.4); }
 .logo-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .le-btns { display: flex; gap: 8px; }
 
+/* ---- הגדרות: מפתחות API ---- */
+.secret-editor { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.secret-input {
+  width: 100%; max-width: 520px; background: var(--card-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px;
+  font: 13px/1.6 inherit; direction: ltr; text-align: left;
+}
+.secret-input:focus { outline: none; border-color: var(--accent); }
+.secret-status { font-size: 12px; color: var(--text-dim); }
+.secret-status .ok { color: var(--ok); }
+.secret-status .warn { color: var(--warn, #e0b341); }
+
 /* ---- הגדרות: עורך פרומפטים ---- */
 .prompt-field { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
 .pf-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }

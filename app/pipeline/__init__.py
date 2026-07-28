@@ -1,1 +1,1 @@
-"""צינור העיבוד: חילוץ אודיו -> תמלול -> זיהוי דוברים -> מיזוג."""
+"""Processing pipeline: Audio extraction -> transcription -> speaker identification -> merging."""

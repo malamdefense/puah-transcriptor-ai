@@ -1,7 +1,7 @@
-"""שכבת גישה למסד הנתונים (SQLite).
+"""Access layer to the database (SQLite).
 
-SQLite נבחר במכוון: פריסת On-Prem על שרת בודד, ללא צורך בשירות broker חיצוני.
-מצב WAL מאפשר קריאה (ה-API) במקביל לכתיבה (ה-worker).
+SQLite was chosen deliberately: On-Prem deployment on a single server, without the need for an external broker service.
+WAL mode allows parallel read (API) and write (worker).
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def _connect() -> sqlite3.Connection:
 
 
 def get_conn() -> sqlite3.Connection:
-    """חיבור פר-thread (sqlite אינו מאפשר שיתוף חיבור בין threads)."""
+    """Connection per-thread (SQLite does not allow sharing connections between threads)."""
     conn = getattr(_local, "conn", None)
     if conn is None:
         conn = _connect()
@@ -111,9 +111,9 @@ def update_job(job_id: str, **fields: Any) -> None:
 
 
 def claim_next_job() -> Optional[dict[str, Any]]:
-    """תופס באופן אטומי את המשימה הממתינה הוותיקה ביותר ומסמן אותה כ-processing.
+    """Atomically claims the oldest queued job and marks it as processing.
 
-    BEGIN IMMEDIATE נועל את הכתיבה כך ששני workers לא יתפסו את אותה משימה.
+    BEGIN IMMEDIATE prevents two workers from claiming the same job.
     """
     conn = get_conn()
     try:
@@ -141,7 +141,7 @@ def claim_next_job() -> Optional[dict[str, Any]]:
 
 
 def reset_stuck_jobs() -> int:
-    """מחזיר ל-queued משימות שנתקעו ב-processing (לדוגמה לאחר קריסת worker)."""
+    """Returns jobs stuck in processing (e.g. after a worker crash) to queued."""
     cur = get_conn().execute(
         "UPDATE jobs SET status='queued', stage=NULL, progress=0, started_at=NULL "
         "WHERE status='processing'"
@@ -155,10 +155,10 @@ def delete_job(job_id: str) -> None:
     conn.execute("DELETE FROM segments_fts WHERE job_id = ?", (job_id,))
 
 
-# --- חיפוש מלא (FTS5) ---
+# --- Full search (FTS5) ---
 
 def index_job_segments(job_id: str, result: dict[str, Any]) -> None:
-    """מאנדקס מחדש את קטעי התמלול של משימה לחיפוש (שומר את שם התצוגה של הדובר)."""
+    """Re-indexes the segments of a job for search (maintains the speaker display name)."""
     conn = get_conn()
     conn.execute("DELETE FROM segments_fts WHERE job_id = ?", (job_id,))
     speakers = result.get("speakers", {})
@@ -181,9 +181,9 @@ def index_job_segments(job_id: str, result: dict[str, Any]) -> None:
 
 
 def _fts_match(query: str) -> Optional[str]:
-    """בונה שאילתת FTS5 (trigram): כל מילה באורך >=3 כתת-מחרוזת, בחיבור AND.
+    """Builds an FTS5 query (trigram): every word >=3 characters as a substring, joined by AND.
 
-    מחזיר None אם אין מילה באורך 3+ (trigram דורש לפחות 3 תווים) — אז נופלים ל-LIKE.
+    Returns None if there is no word >=3 characters (trigram requires at least 3 characters) — then falls back to LIKE.
     """
     tokens = [t for t in re.findall(r"\w+", query, flags=re.UNICODE) if len(t) >= 3]
     if not tokens:
@@ -210,7 +210,6 @@ def search_segments(query: str, limit: int = 100) -> list[dict[str, Any]]:
             (match, limit),
         ).fetchall()
     else:
-        # שאילתה קצרה מ-3 תווים — חיפוש תת-מחרוזת ישיר
         like = f"%{q}%"
         rows = conn.execute(
             _SEARCH_SELECT + "WHERE s.text LIKE ? OR s.speaker LIKE ? ORDER BY s.start LIMIT ?",
@@ -219,10 +218,10 @@ def search_segments(query: str, limit: int = 100) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-# --- סטטיסטיקות לדשבורד ---
+# --- Dashboard statistics ---
 
 def compute_stats() -> dict[str, Any]:
-    """אגרגציות מהירות מטבלת ה-jobs ומאינדקס החיפוש (ללא קריאת קובצי תוצאה)."""
+    """Fast aggregations from the jobs table and search index (without loading result files)."""
     conn = get_conn()
     by_status = {
         r["status"]: r["c"]
@@ -263,7 +262,7 @@ def compute_stats() -> dict[str, Any]:
     }
 
 
-# --- אחסון תוצאות (קובץ JSON לכל משימה) ---
+# --- Result storage (JSON file per job) ---
 
 def result_path(job_id: str) -> Path:
     return get_settings().results_dir / f"{job_id}.json"

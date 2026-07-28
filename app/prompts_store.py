@@ -12,13 +12,13 @@ from typing import Any
 from .config import get_settings
 from .pipeline import puah_prompts
 
-# מטא-דאטה לכל פרומפט הניתן לעריכה: מפתח -> (כותרת בעברית, ערך ברירת מחדל)
-# הערה: "סיכום כללי — הנחיית מערכת" (SUMMARY_SYSTEM) אינו ניתן לעריכה מהממשק בכוונה —
-# הוא קבוע בקוד (app/pipeline/puah_prompts.py). רק הוראות הפלט (JSON) נחשפות לעריכה.
+# Metadata for each editable prompt: key -> (Hebrew title, default value)
+# Note: "Summary general — system instructions" (SUMMARY_SYSTEM) is not editable from the interface —
+# it is fixed in code (app/pipeline/puah_prompts.py). Only the output instructions (JSON) are exposed for editing.
 FIELDS: dict[str, dict[str, str]] = {
     "summary_instructions": {
-        "label": "סיכום כללי — הוראות פלט (JSON)",
-        "default": puah_prompts.SUMMARY_INSTRUCTIONS,
+        # "label": "סיכום כללי — הוראות פלט (JSON)",
+        # "default": puah_prompts.SUMMARY_INSTRUCTIONS,
     },
     "puah_system": {
         "label": "עקרונות ליבה — סיכום ללקוח + משוב (הנחיית מערכת)",
@@ -51,12 +51,10 @@ def _overrides() -> dict[str, str]:
 
 
 def get(key: str) -> str:
-    """מחזיר את הערך הפעיל של פרומפט (override אם קיים, אחרת ברירת מחדל)."""
     return _overrides().get(key, FIELDS[key]["default"])
 
 
 def all_prompts() -> dict[str, dict[str, Any]]:
-    """לכל פרומפט: הערך הפעיל, ברירת המחדל, והאם נערך (override)."""
     ov = _overrides()
     return {
         key: {
@@ -70,14 +68,13 @@ def all_prompts() -> dict[str, dict[str, Any]]:
 
 
 def save(updates: dict[str, str]) -> None:
-    """שומר עריכות. ערך זהה לברירת המחדל מוסר (חזרה ל-default)."""
     ov = _overrides()
     for key, val in updates.items():
         if key not in FIELDS:
             continue
         val = str(val)
         if val.strip() == FIELDS[key]["default"].strip():
-            ov.pop(key, None)  # זהה לברירת מחדל — לא שומרים override
+            ov.pop(key, None)
         else:
             ov[key] = val
     path = _store_path()
@@ -86,7 +83,6 @@ def save(updates: dict[str, str]) -> None:
 
 
 def reset(key: str | None = None) -> None:
-    """מחזיר לברירת מחדל — פרומפט בודד (key) או הכול (None)."""
     if key is None:
         _store_path().unlink(missing_ok=True)
         return

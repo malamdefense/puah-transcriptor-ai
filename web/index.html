@@ -27,7 +27,7 @@
   </header>
 
   <main class="layout">
-    <!-- צד ימין: העלאה + רשימת משימות -->
+    <!-- Right side: upload + job list -->
     <section class="sidebar">
       <div class="card upload-card">
         <h2>העלאת הקלטה</h2>
@@ -76,7 +76,7 @@
       </div>
     </section>
 
-    <!-- צד שמאל: תצוגת תמלול -->
+    <!-- Left side: transcription display -->
     <section class="content">
       <div id="emptyState" class="empty">
         <div class="empty-icon">🎙️</div>
@@ -137,6 +137,22 @@
                 <button class="btn ghost" data-logo="left" data-act="remove">הסר</button>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div class="dash-card wide">
+          <h3>מפתח API — Google Gemini</h3>
+          <p class="dash-empty">מפתח שיוזן כאן <b>דורס</b> את הערך שבקובץ ‎.env‎ בזמן ריצה.
+            <b>נדרש להפקת סיכומים ומשוב</b> — Gemini הוא מנוע הסיכום היחיד. תוכן השיחה נשלח
+            לשרתי Google לאחר הסרת פרטים מזהים מקומית; התמלול וזיהוי הדוברים נשארים מקומיים.</p>
+          <div class="secret-editor">
+            <input type="password" id="geminiKeyInput" class="secret-input"
+                   placeholder="הדביקו כאן מפתח API" autocomplete="off" spellcheck="false" />
+            <div class="le-btns">
+              <button id="geminiKeySave" class="btn ghost">שמור</button>
+              <button id="geminiKeyClear" class="btn ghost">מחק (חזרה ל-‎.env‎)</button>
+            </div>
+            <span id="geminiKeyStatus" class="secret-status"></span>
           </div>
         </div>
 

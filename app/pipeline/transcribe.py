@@ -1,6 +1,6 @@
-"""תמלול עברית באמצעות faster-whisper עם מודל ivrit.ai.
+"""Transcription of Hebrew speech using faster-whisper with the ivrit.ai model.
 
-המודל נטען פעם אחת ונשאר תושב בזיכרון ה-GPU כל עוד ה-worker חי.
+The model is loaded once and remains resident in GPU memory as long as the worker is alive.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from ..config import Settings
 
 
 def resolve_device_and_compute(settings: Settings) -> tuple[str, str]:
-    """בוחר device ו-compute_type מתאימים (מכבד הגדרות מפורשות)."""
+    """Select the appropriate device and compute_type (respecting explicit settings)."""
     device = settings.device
     compute = settings.compute_type
 
@@ -31,7 +31,7 @@ def resolve_device_and_compute(settings: Settings) -> tuple[str, str]:
 
 
 class Transcriber:
-    """עוטף את faster-whisper. נטען עצלן בקריאה הראשונה ל-load()."""
+    """Wraps faster-whisper. Lazily loaded by the first call to load()."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -55,9 +55,9 @@ class Transcriber:
         duration_sec: float,
         progress_cb: Optional[Callable[[float], None]] = None,
     ) -> list[dict]:
-        """מחזיר רשימת קטעים: {start, end, text, words:[{start,end,word}]}.
+        """Return a list of segments: {start, end, text, words:[{start,end,word}]}.
 
-        progress_cb מקבל אחוז (0-100) לפי התקדמות לאורך הזמן.
+        progress_cb receives a percentage (0-100) based on progress along the time axis.
         """
         self.load()
         assert self._model is not None

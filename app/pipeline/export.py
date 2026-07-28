@@ -1,4 +1,4 @@
-"""ייצוא התמלול לפורמטים: טקסט, SRT, WebVTT, JSON."""
+"""Export the transcript to formats: text, SRT, WebVTT, JSON."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 
 def _fmt_ts(seconds: float, sep: str = ",") -> str:
-    """HH:MM:SS,mmm (SRT) או HH:MM:SS.mmm (VTT)."""
+    """HH:MM:SS,mmm (SRT) or HH:MM:SS.mmm (VTT)."""
     if seconds < 0:
         seconds = 0.0
     ms = int(round(seconds * 1000))
@@ -18,7 +18,7 @@ def _fmt_ts(seconds: float, sep: str = ",") -> str:
 
 
 def _fmt_clock(seconds: float) -> str:
-    """[MM:SS] לתצוגה בטקסט."""
+    """[MM:SS] for display in text."""
     total = int(round(seconds))
     h, rem = divmod(total, 3600)
     m, s = divmod(rem, 60)

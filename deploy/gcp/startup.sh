@@ -5,7 +5,6 @@
 # מטא-דאטה שהסקריפט קורא (מוגדרת ב-gcloud compute instances create):
 #   app-bucket   — באקט GCS שממנו נמשך קוד האפליקציה   (חובה)
 #   hf-secret    — שם הסוד ב-Secret Manager עם טוקן ה-HF (חובה)
-#   llm-model    — מודל הסיכום (ברירת מחדל gemma4:12b)
 #   embed-model  — מודל ה-embedding (ברירת מחדל bge-m3)
 #
 # לוגים:  sudo journalctl -u google-startup-scripts -f
@@ -20,7 +19,6 @@ meta() { curl -fsS -H "Metadata-Flavor: Google" \
 
 APP_BUCKET="$(meta app-bucket)"
 HF_SECRET="$(meta hf-secret)"
-LLM_MODEL="$(meta llm-model gemma4:12b)"
 EMBED_MODEL="$(meta embed-model bge-m3)"
 [ -n "$APP_BUCKET" ] || { echo "חסר metadata app-bucket"; exit 1; }
 
@@ -68,7 +66,6 @@ if [ ! -f "$APP_DIR/.env" ]; then
 fi
 HF_TOKEN="$(gcloud secrets versions access latest --secret="$HF_SECRET")"
 sed -i "s|^PUAH_HF_TOKEN=.*|PUAH_HF_TOKEN=${HF_TOKEN}|"        "$APP_DIR/.env"
-sed -i "s|^PUAH_LLM_MODEL=.*|PUAH_LLM_MODEL=${LLM_MODEL}|"     "$APP_DIR/.env"
 sed -i "s|^PUAH_EMBED_MODEL=.*|PUAH_EMBED_MODEL=${EMBED_MODEL}|" "$APP_DIR/.env"
 chown puah:puah "$APP_DIR/.env" && chmod 600 "$APP_DIR/.env"
 
@@ -78,9 +75,9 @@ echo "--- מתקין תלויות (עשוי לקחת מספר דקות) ---"
 cd "$APP_DIR"
 sudo -u puah python3 rebuild.py --install-only
 
-# ---------- 7. משיכת מודלי ה-LLM ----------
-echo "--- מושך מודלים: ${LLM_MODEL} + ${EMBED_MODEL} ---"
-ollama pull "$LLM_MODEL"
+# ---------- 7. משיכת מודל ה-embedding ----------
+# הסיכום מופק ב-Gemini (ענן); Ollama משמש ל-embeddings בלבד.
+echo "--- מושך מודל embedding: ${EMBED_MODEL} ---"
 ollama pull "$EMBED_MODEL"
 
 # ---------- 8. שירותי systemd ----------

@@ -1,4 +1,4 @@
-"""סכימות Pydantic לתשובות ה-API."""
+"""Pydantic schemas for API responses."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class Word(BaseModel):
 
 
 class Segment(BaseModel):
-    """קטע דיבור רציף של דובר יחיד."""
+    """Continuous speech segment of a single speaker."""
 
     start: float
     end: float
@@ -58,7 +58,7 @@ class TranscriptResult(BaseModel):
     language: str
     duration_sec: float
     num_speakers: int
-    speakers: dict[str, str]  # מזהה פנימי (SPEAKER_00) -> שם תצוגה
+    speakers: dict[str, str]  # Internal identifier (SPEAKER_00) -> display name
     segments: list[Segment]
     asr_model: str
     diarization_model: str
@@ -68,7 +68,7 @@ class TranscriptResult(BaseModel):
 
 
 class SpeakerRename(BaseModel):
-    speakers: dict[str, str]  # מזהה פנימי -> שם חדש
+    speakers: dict[str, str]  # Internal identifier -> new name
 
 
 class SearchMatch(BaseModel):
