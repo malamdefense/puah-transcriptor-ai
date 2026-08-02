@@ -1,15 +1,22 @@
 # -*- coding: utf-8 -*-
 """LLM provider: Google Gemini (cloud), with structural PII enforcement (Template Method).
 
-הערה ארכיטקטונית: המערכת פעלה בעבר גם מול מודל מקומי (Ollama/gemma4) לפי
-Strategy pattern. ספק זה הוסר לבקשת הלקוח, ו-Gemini הוא כיום מנוע הסיכום היחיד.
-המשמעות: הפקת סיכום/משוב מחייבת מפתח API תקין וקישוריות לאינטרנט, ותוכן השיחה
-(לאחר הסרת PII) יוצא לשרתי Google — קריטריון "0% דליפה לענן" אינו ניתן עוד לעמידה.
+Architectural note: the system previously also ran against a local model (Ollama/gemma4)
+behind a Strategy pattern. That provider was removed, and Gemini is now the only
+summarization engine. The consequence is deliberate and worth stating: producing a
+summary/feedback requires a valid API key and internet connectivity, and the call
+content (after PII redaction) leaves to Google's servers — so the original "0% cloud
+egress" criterion can no longer be met.
 
-What remains local (On-Prem): the transcript (faster-whisper), speaker diarization (pyannote),
-local PII enforcement (HebSafeHarbor) and embeddings for RAG (bge-m3 via Ollama).
+What remains local (On-Prem): transcription (faster-whisper), speaker diarization
+(pyannote), PII redaction (HebSafeHarbor) and the RAG embeddings (bge-m3 via Ollama).
 
-PII enforcement (Template Method — Zero Trust architecture): BaseLLMProvider.chat() is the *only* public method (marked @final), and always performs PII enforcement (via app.pipeline.pii.redact_texts) *before* it passes the messages to the abstract _call_api() hook that each concrete provider implements. The hook has no access to the raw messages at all. The layer is preserved even when there is only one provider: so any future provider added will inherit the structural enforcement and cannot "forget" it.
+PII enforcement (Template Method — Zero Trust): BaseLLMProvider.chat() is the *only*
+public method (marked @final) and always runs PII redaction (via
+app.pipeline.pii.redact_texts) *before* handing the messages to the abstract
+_call_api() hook that each concrete provider implements. The hook never sees the raw
+messages. The layer is kept even though a single provider remains, so any provider
+added later inherits the enforcement structurally and cannot "forget" it.
 """
 
 from __future__ import annotations

@@ -1,9 +1,16 @@
-"""Automatic summarization of a call using Google Gemini.
+"""Generation of the two PUAH deliverables using Google Gemini.
 
-Gemini is the summarization engine. All text goes through local PII enforcement before going to the cloud (enforced in BaseLLMProvider — see llm_providers).
-Long calls are often summarized using map-reduce: we summarize each segment separately and then combine them into a single structured summary.
+Gemini is the only summarization engine — the local model provider was removed.
+All text goes through local PII redaction before leaving to the cloud; that is enforced
+structurally in BaseLLMProvider (see llm_providers), not here.
 
-The output: {summary, key_points, action_items, topics, keywords}.
+Produces:
+  * generate_client_summary — the summary sent to the caller
+  * generate_feedback       — the internal feedback for the consultant
+
+The structured "automatic summary" that this module used to build with the model is
+gone. The only parts of it still consumed downstream (topics + keywords, which feed the
+dashboard) are now derived locally, without any AI call — see pipeline/keywords.py.
 """
 
 from __future__ import annotations
@@ -13,23 +20,25 @@ import re
 from typing import Any
 
 from ..config import Settings
-from . import llm_providers, puah_prompts
+from . import llm_providers
 from .llm_providers import LLMError  # Kept for compatibility: app.main / app.worker / tests import from here
 
 
 def _chat(settings: Settings, messages: list[dict], temperature: float = 0.2) -> str:
     """The only entry point to the language model (Gemini, via the factory in llm_providers).
 
-    Kept as an independent function (not a direct call to the provider in every call site) to maintain compatibility
-    with existing tests that monkey-patch sm._chat.
+    Kept as an independent function (rather than calling the provider at every call
+    site) so existing tests can monkey-patch sm._chat.
     """
     return llm_providers.get_provider(settings).chat(messages, temperature)
 
 
 def check_available(settings: Settings) -> bool:
-    """Quick check if we can produce summaries.
+    """Quick check whether summaries can be produced at all.
 
-    After removing the local provider, there is no local server to check against — the condition is the presence of a Gemini API key and a PII environment (required before going to the cloud). There is no actual network call, so the health check remains immediate and does not consume API quota.
+    There is no local server to probe: the condition is a Gemini API key plus an
+    installed PII environment (mandatory before anything leaves to the cloud). No
+    network call is made, so the health check stays instant and consumes no API quota.
     """
     from .pii import pii_available
 
@@ -47,21 +56,8 @@ def build_transcript_text(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _chunks_by_chars(text: str, max_chars: int) -> list[str]:
-    lines = text.split("\n")
-    chunks, cur, size = [], [], 0
-    for ln in lines:
-        if size + len(ln) > max_chars and cur:
-            chunks.append("\n".join(cur))
-            cur, size = [], 0
-        cur.append(ln)
-        size += len(ln) + 1
-    if cur:
-        chunks.append("\n".join(cur))
-    return chunks
-
-
 # ---------- JSON parsing ----------
+# Still used by eval_metrics.topic_coverage, which asks the model for a JSON verdict.
 
 def _parse_json(content: str) -> dict[str, Any]:
     text = content.strip()
@@ -76,30 +72,11 @@ def _parse_json(content: str) -> dict[str, Any]:
         return {}
 
 
-def _as_str_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(x).strip() for x in value if str(x).strip()]
-    if isinstance(value, str) and value.strip():
-        return [value.strip()]
-    return []
-
-
-def _normalize_summary(raw: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "summary": str(raw.get("summary", "")).strip(),
-        "key_points": _as_str_list(raw.get("key_points")),
-        "action_items": _as_str_list(raw.get("action_items")),
-        "topics": _as_str_list(raw.get("topics")),
-        "keywords": _as_str_list(raw.get("keywords")),
-    }
-
-
 # ---------- Output validation + retries ----------
 # Guards against degenerate model output: empty/truncated answers, or reserved junk
-# tokens (<unused50>, <pad>) emitted instead of a real response. This was observed
-# frequently with the previous local model and is not input-length dependent nor
-# deterministic — re-running the same prompt usually succeeds. So we validate the
-# output and retry with a rising temperature to break the degenerate state.
+# tokens (<unused50>, <pad>) emitted instead of a real response. Not input-length
+# dependent nor deterministic — re-running the same prompt usually succeeds. So we
+# validate the output and retry with a rising temperature to break the degenerate state.
 
 _JUNK_MARKERS = ("<unused", "<pad>", "<|", "�")
 
@@ -121,7 +98,7 @@ def _chat_checked(
     attempts: int = 3,
     validator: Any = None,
 ) -> str:
-    """Call the LLM and validate the output; try again (with higher temperature) if the output is junk."""
+    """Call the LLM and validate the output; retry (with higher temperature) on junk."""
     check = validator or (lambda t: _looks_valid(t))
     last = ""
     for i in range(max(1, attempts)):
@@ -143,50 +120,8 @@ def _p(key: str) -> str:
     return prompts_store.get(key)
 
 
-def _summarize_single(settings: Settings, transcript: str) -> dict[str, Any]:
-    messages = [
-        {"role": "system", "content": puah_prompts.SUMMARY_SYSTEM},
-        {"role": "user", "content": f"{puah_prompts.SUMMARY_INSTRUCTIONS}\n\n=== תמלול השיחה ===\n{transcript}"},
-    ]
-    # Valid = can be parsed to JSON with content
-    content = _chat_checked(settings, messages, validator=lambda t: bool(_parse_json(t)))
-    return _normalize_summary(_parse_json(content))
-
-
-def _summarize_mapreduce(settings: Settings, transcript: str) -> dict[str, Any]:
-    system = puah_prompts.SUMMARY_SYSTEM
-    chunks = _chunks_by_chars(transcript, settings.summary_max_chars)
-    partials = []
-    for i, ch in enumerate(chunks, 1):
-        messages = [
-            {"role": "system", "content": system},
-            {
-                "role": "user",
-                "content": (
-                    f"זהו חלק {i} מתוך {len(chunks)} של תמלול שיחה. "
-                    "כתוב סיכום נקודתי קצר בעברית של חלק זה (ללא JSON):\n\n" + ch
-                ),
-            },
-        ]
-        partials.append(_chat_checked(settings, messages, validator=lambda t: _looks_valid(t, 30)))
-
-    combined = "\n\n".join(f"חלק {i}:\n{p}" for i, p in enumerate(partials, 1))
-    messages = [
-        {"role": "system", "content": system},
-        {
-            "role": "user",
-            "content": (
-                f"{puah_prompts.SUMMARY_INSTRUCTIONS}\n\n"
-                "להלן סיכומים חלקיים של חלקי השיחה. אחד אותם לסיכום כולל אחד:\n\n" + combined
-            ),
-        },
-    ]
-    content = _chat_checked(settings, messages, validator=lambda t: bool(_parse_json(t)))
-    return _normalize_summary(_parse_json(content))
-
-
 def generate_client_summary(settings: Settings, result: dict[str, Any]) -> str:
-    """Generate "Client Summary" based on Puah's prompts (continuous Hebrew text)."""
+    """Generate the "Client Summary" using PUAH's prompts (continuous Hebrew text)."""
     transcript = build_transcript_text(result)
     if not transcript.strip():
         raise LLMError("The transcript is empty — nothing to summarize.")
@@ -198,7 +133,7 @@ def generate_client_summary(settings: Settings, result: dict[str, Any]) -> str:
 
 
 def generate_feedback(settings: Settings, result: dict[str, Any]) -> str:
-    """Generate "Professional Feedback" based on Puah's prompts (Hebrew text)."""
+    """Generate the internal "Professional Feedback" using PUAH's prompts (Hebrew text)."""
     transcript = build_transcript_text(result)
     if not transcript.strip():
         raise LLMError("The transcript is empty — nothing to analyze.")
@@ -207,21 +142,3 @@ def generate_feedback(settings: Settings, result: dict[str, Any]) -> str:
         {"role": "user", "content": _p("feedback_task") + "\n\n=== תמלול השיחה ===\n" + transcript},
     ]
     return _chat_checked(settings, messages, validator=lambda t: _looks_valid(t, 120)).strip()
-
-
-def summarize(settings: Settings, result: dict[str, Any]) -> dict[str, Any]:
-    """Create a structured summary for the transcript. Adds model and generated_at_placeholder fields.
-
-    Raises LLMError if the model server is not available.
-    """
-    transcript = build_transcript_text(result)
-    if not transcript.strip():
-        raise LLMError("The transcript is empty — nothing to summarize.")
-
-    if len(transcript) > settings.summary_max_chars:
-        summary = _summarize_mapreduce(settings, transcript)
-    else:
-        summary = _summarize_single(settings, transcript)
-
-    summary["model"] = settings.gemini_model
-    return summary

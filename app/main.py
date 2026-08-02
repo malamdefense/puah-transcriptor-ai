@@ -73,7 +73,7 @@ def health() -> dict:
         "status": "ok",
         "version": __version__,
         "asr_model": settings.asr_model,
-        "summary_enabled": settings.summary_enabled,
+        "summary_enabled": settings.client_summary_enabled or settings.feedback_enabled,
         "llm_model": settings.gemini_model,
     }
 
@@ -248,12 +248,16 @@ def export_feedback_xlsx() -> Response:
 
 @app.get("/api/llm/status")
 def llm_status() -> dict:
-    """Availability of the summary engine (Gemini). See summarize.check_available — no network call."""
-    if not settings.summary_enabled:
-        return {"enabled": False, "available": False, "model": settings.gemini_model}
+    """Availability of the summary engine (Gemini). See summarize.check_available — no network call.
+
+    "enabled" reflects whether either deliverable is switched on; it used to be tied to
+    a master summary_enabled flag which kept reporting the engine as off while the
+    worker was in fact still producing summaries.
+    """
+    enabled = settings.client_summary_enabled or settings.feedback_enabled
     return {
-        "enabled": True,
-        "available": check_available(settings),
+        "enabled": enabled,
+        "available": enabled and check_available(settings),
         "model": settings.gemini_model,
         "provider": "gemini",
     }

@@ -44,14 +44,12 @@ class Settings(BaseSettings):
     # Hint for the number of speakers. None = auto-detect. Can also be overridden per job.
     default_num_speakers: int | None = Field(default=None)
 
-    # --- Automatic summary (Google Gemini — see the "LLM provider" section below) ---
-    summary_enabled: bool = Field(default=True)
+    # --- Summaries (Google Gemini — see the "LLM provider" section below) ---
     # 2048 was too small: long summaries/feedback were cut off mid-text. Raised to 6144.
     llm_max_tokens: int = Field(default=6144)
-    # Above this length (characters) the summary is produced via map-reduce
-    # (split into chunks, then merge).
-    summary_max_chars: int = Field(default=12000)
-    # The dedicated PUAH products (per the prompt): "client summary" and "consultant feedback"
+    # The two deliverables, each with its own switch. (There is no master switch: the
+    # former summary_enabled gated an AI-generated structured summary that no longer
+    # exists — topics/keywords are now derived locally in pipeline/keywords.py.)
     client_summary_enabled: bool = Field(default=True)
     feedback_enabled: bool = Field(default=True)
 
