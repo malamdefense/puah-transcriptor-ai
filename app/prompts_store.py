@@ -16,10 +16,8 @@ from .pipeline import puah_prompts
 # Note: "Summary general — system instructions" (SUMMARY_SYSTEM) is not editable from the interface —
 # it is fixed in code (app/pipeline/puah_prompts.py). Only the output instructions (JSON) are exposed for editing.
 FIELDS: dict[str, dict[str, str]] = {
-    "summary_instructions": {
-        # "label": "סיכום כללי — הוראות פלט (JSON)",
-        # "default": puah_prompts.SUMMARY_INSTRUCTIONS,
-    },
+    # "summary_instructions" הוסר מרשימת העריכה בממשק (נשאר קבוע בקוד,
+    # puah_prompts.SUMMARY_INSTRUCTIONS) — כמו SUMMARY_SYSTEM לפניו.
     "puah_system": {
         "label": "עקרונות ליבה — סיכום ללקוח + משוב (הנחיית מערכת)",
         "default": puah_prompts.SYSTEM,

@@ -142,7 +142,7 @@ def _p(key: str) -> str:
 def _summarize_single(settings: Settings, transcript: str) -> dict[str, Any]:
     messages = [
         {"role": "system", "content": puah_prompts.SUMMARY_SYSTEM},
-        {"role": "user", "content": f"{_p('summary_instructions')}\n\n=== תמלול השיחה ===\n{transcript}"},
+        {"role": "user", "content": f"{puah_prompts.SUMMARY_INSTRUCTIONS}\n\n=== תמלול השיחה ===\n{transcript}"},
     ]
     # Valid = can be parsed to JSON with content
     content = _chat_checked(settings, messages, validator=lambda t: bool(_parse_json(t)))
@@ -172,7 +172,7 @@ def _summarize_mapreduce(settings: Settings, transcript: str) -> dict[str, Any]:
         {
             "role": "user",
             "content": (
-                f"{_p('summary_instructions')}\n\n"
+                f"{puah_prompts.SUMMARY_INSTRUCTIONS}\n\n"
                 "להלן סיכומים חלקיים של חלקי השיחה. אחד אותם לסיכום כולל אחד:\n\n" + combined
             ),
         },

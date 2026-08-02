@@ -1,14 +1,6 @@
 # -*- coding: utf-8 -*-
 """LLM provider: Google Gemini (cloud), with structural PII enforcement (Template Method).
 
-הערה ארכיטקטונית: המערכת פעלה בעבר גם מול מודל מקומי (Ollama/gemma4) לפי
-Strategy pattern. ספק זה הוסר לבקשת הלקוח, ו-Gemini הוא כיום מנוע הסיכום היחיד.
-המשמעות: הפקת סיכום/משוב מחייבת מפתח API תקין וקישוריות לאינטרנט, ותוכן השיחה
-(לאחר הסרת PII) יוצא לשרתי Google — קריטריון "0% דליפה לענן" אינו ניתן עוד לעמידה.
-
-What remains local (On-Prem): the transcript (faster-whisper), speaker diarization (pyannote),
-local PII enforcement (HebSafeHarbor) and embeddings for RAG (bge-m3 via Ollama).
-
 PII enforcement (Template Method — Zero Trust architecture): BaseLLMProvider.chat() is the *only* public method (marked @final), and always performs PII enforcement (via app.pipeline.pii.redact_texts) *before* it passes the messages to the abstract _call_api() hook that each concrete provider implements. The hook has no access to the raw messages at all. The layer is preserved even when there is only one provider: so any future provider added will inherit the structural enforcement and cannot "forget" it.
 """
 

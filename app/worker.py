@@ -13,6 +13,7 @@ import time
 import traceback
 from pathlib import Path
 
+from . import secrets_store
 from .config import Settings, get_settings
 from .db import (
     claim_next_job,
@@ -68,6 +69,10 @@ def _stage_progress(stage: str, inner_pct: float) -> float:
 
 def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None:
     settings = get_settings()
+    # ה-worker הוא תהליך נפרד עם מטמון הגדרות משלו (get_settings ממוטמח ב-lru_cache),
+    # ולכן מפתח שהוזן בממשק (data/secrets.json) לא היה נקלט כאן עד הפעלה מחדש.
+    # קריאה חוזרת לפני כל משימה מייקרת קריאת JSON קטנה אחת — זניח מול אורך המשימה.
+    secrets_store.apply_overrides(settings, settings.data_dir)
     job_id = job["id"]
     uploaded = settings.uploads_dir / f"{job_id}.mp4"
     audio_path = settings.audio_dir / f"{job_id}.wav"
