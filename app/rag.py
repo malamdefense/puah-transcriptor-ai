@@ -1,15 +1,16 @@
-"""RAG סמנטי — אינדוקס "סיכום ללקוח" ו"משוב" מהאקסל, וחיפוש דמיון סמנטי.
+"""Semantic RAG — indexes the "client summary" and "feedback" columns from the Excel
+sheet and performs semantic similarity search over them.
 
-אחסון וקטורי: **ChromaDB** במצב embedded (PersistentClient → data/chroma/).
-נשאר On-Prem לחלוטין — אין שרת חיצוני, אין טלמטריה (מכובה במפורש), שום נתון לא יוצא.
-ה-embeddings מחושבים מקומית דרך Ollama (ברירת מחדל bge-m3), ו-Chroma מאנדקס אותם (HNSW,
-מרחק cosine) — מתאים גם לאלפי תמלולים.
+Vector store: **ChromaDB** in embedded mode (PersistentClient -> data/chroma/).
+Stays fully On-Prem — no external server, no telemetry (explicitly disabled), no data
+leaves the machine. Embeddings are computed locally via Ollama (bge-m3 by default) and
+Chroma indexes them (HNSW, cosine distance) — scales to thousands of transcripts.
 
-למעבר לשרת Chroma נפרד: הגדירו PUAH_CHROMA_HOST (אז ישתמש ב-HttpClient).
+To use a separate Chroma server instead: set PUAH_CHROMA_HOST (an HttpClient is used).
 
-שימוש:
-    build_from_excel("משוב_שיחות.xlsx")           # בונה את האינדקס מכל שורה
-    search("טקסט סיכום שנוצר", kind="summary")    # מחזיר את הרשומות הדומות ביותר
+Usage:
+    build_from_excel("משוב_שיחות.xlsx")           # build the index from every row
+    search("generated summary text", kind="summary")  # most semantically similar rows
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from typing import Any, Optional
 
 from .config import Settings, get_settings
 
-# חובה לפני ייבוא chromadb — כיבוי טלמטריה (Chroma שולח ל-PostHog כברירת מחדל!).
+# Must run before importing chromadb — disables telemetry (Chroma reports to PostHog by default!).
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 os.environ.setdefault("CHROMA_TELEMETRY_IMPL", "none")
 
@@ -36,10 +37,10 @@ KINDS = ("summary", "feedback")
 _COLLECTION = "puah_rag"
 
 
-# ---------- לקוח Chroma (embedded / server) ----------
+# ---------- Chroma client (embedded / server) ----------
 
 def _client(settings: Settings):
-    import chromadb  # ייבוא עצל
+    import chromadb  # lazy import
     from chromadb.config import Settings as ChromaSettings
 
     chroma_conf = ChromaSettings(anonymized_telemetry=False)
@@ -52,13 +53,13 @@ def _client(settings: Settings):
 
 
 def _collection(settings: Settings):
-    """אוסף יחיד; ההפרדה summary/feedback דרך metadata. מרחק cosine."""
+    """Single collection; summary/feedback are separated via metadata. Cosine distance."""
     return _client(settings).get_or_create_collection(
         name=_COLLECTION, metadata={"hnsw:space": "cosine"}
     )
 
 
-# ---------- חישוב embeddings דרך Ollama ----------
+# ---------- Embedding computation via Ollama ----------
 
 def _ollama_root(settings: Settings) -> str:
     base = settings.llm_base_url.rstrip("/")
@@ -68,7 +69,7 @@ def _ollama_root(settings: Settings) -> str:
 
 
 def embed_texts(settings: Settings, texts: list[str]) -> list[list[float]]:
-    """מחשב embeddings לרשימת טקסטים דרך Ollama (/api/embed)."""
+    """Compute embeddings for a list of texts via Ollama (/api/embed)."""
     if not texts:
         return []
     url = _ollama_root(settings) + "/api/embed"
@@ -93,10 +94,10 @@ def embed_texts(settings: Settings, texts: list[str]) -> list[list[float]]:
     return [[float(x) for x in v] for v in embs]
 
 
-# ---------- בניית האינדקס ----------
+# ---------- Index building ----------
 
 def read_excel_rows(xlsx_path: str | Path) -> list[dict[str, str]]:
-    """קורא את האקסל: עמודה A=שם הקלטה, B=סיכום ללקוח, C=משוב."""
+    """Read the Excel sheet: column A=recording name, B=client summary, C=feedback."""
     import openpyxl
 
     ws = openpyxl.load_workbook(xlsx_path, data_only=True).worksheets[0]
@@ -116,7 +117,7 @@ def read_excel_rows(xlsx_path: str | Path) -> list[dict[str, str]]:
 
 
 def build_from_excel(xlsx_path: str | Path, settings: Optional[Settings] = None) -> dict[str, Any]:
-    """בונה מחדש את האינדקס הסמנטי מכל שורה באקסל (2 רשומות לשורה: סיכום + משוב)."""
+    """Rebuild the semantic index from every Excel row (2 entries per row: summary + feedback)."""
     s = settings or get_settings()
     rows = read_excel_rows(xlsx_path)
     if not rows:
@@ -130,11 +131,11 @@ def build_from_excel(xlsx_path: str | Path, settings: Optional[Settings] = None)
 
     vecs = embed_texts(s, [t for _, _, t in items])
 
-    # איפוס האוסף ובנייה מחדש
+    # Reset the collection and rebuild it
     client = _client(s)
     try:
         client.delete_collection(_COLLECTION)
-    except Exception:  # noqa: BLE001 — לא קיים עדיין
+    except Exception:  # noqa: BLE001 — collection does not exist yet
         pass
     col = client.get_or_create_collection(name=_COLLECTION, metadata={"hnsw:space": "cosine"})
     col.add(
@@ -153,12 +154,12 @@ def build_from_excel(xlsx_path: str | Path, settings: Optional[Settings] = None)
     }
 
 
-# ---------- חיפוש ----------
+# ---------- Search ----------
 
 def search(
     text: str, kind: str, top_k: int = 3, settings: Optional[Settings] = None
 ) -> list[dict[str, Any]]:
-    """מחזיר את top_k הרשומות הדומות ביותר סמנטית (cosine), מסוג kind."""
+    """Return the top_k semantically closest entries (cosine) of the given kind."""
     if kind not in KINDS:
         raise RagError(f"kind לא תקין: {kind}")
     s = settings or get_settings()

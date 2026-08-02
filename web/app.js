@@ -270,8 +270,9 @@ function renderTranscript() {
   $("expPiiWord").href = `${API}/jobs/${res.job_id}/pii?format=docx`;
   $("expPiiJson").href = `${API}/jobs/${res.job_id}/pii?format=json`;
 
-  // Automatic summary + PUAH products (client summary, feedback to the consultant)
-  renderSummary(res);
+  // PUAH products: client summary + consultant feedback.
+  // The structured "automatic summary" is still generated server-side (it feeds the
+  // dashboard keywords/topics) but is intentionally not shown in the transcript view.
   renderPuahOutputs(res);
 
   // Player
@@ -361,56 +362,27 @@ async function saveSpeakerNames() {
   }
 }
 
-// ---------- Automatic summary ----------
-function renderSummary(res) {
-  const el = $("summarySection");
-  const s = res.summary;
-
-  const btn = `<button id="genSummaryBtn" class="btn ghost">${s ? "רענן סיכום" : "צור סיכום"}</button>`;
-
-  if (!s) {
-    el.innerHTML = `
-      <div class="summary-card">
-        <div class="sc-head"><h3>📝 סיכום אוטומטי</h3>${btn}</div>
-        <div class="sc-empty">אין סיכום עדיין. לחצו "צור סיכום" (דורש מודל שפה מקומי פעיל).</div>
-      </div>`;
-    $("genSummaryBtn").onclick = generateSummary;
-    return;
-  }
-
-  const list = (arr) =>
-    arr && arr.length ? `<ul>${arr.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>` : "";
-  const tags = (arr, cls) =>
-    arr && arr.length
-      ? `<div class="tags">${arr.map((x) => `<span class="tag ${cls}" data-term="${escapeHtml(x)}">${escapeHtml(x)}</span>`).join("")}</div>`
-      : "";
-
-  el.innerHTML = `
-    <div class="summary-card">
-      <div class="sc-head"><h3>📝 סיכום אוטומטי</h3>${btn}</div>
-      ${s.summary ? `<div class="sc-body">${escapeHtml(s.summary)}</div>` : ""}
-      ${s.key_points && s.key_points.length ? `<div class="sc-block"><h4>נקודות עיקריות</h4>${list(s.key_points)}</div>` : ""}
-      ${s.action_items && s.action_items.length ? `<div class="sc-block"><h4>פעולות והמשך טיפול</h4>${list(s.action_items)}</div>` : ""}
-      ${s.topics && s.topics.length ? `<div class="sc-block"><h4>נושאים</h4>${tags(s.topics, "")}</div>` : ""}
-      ${s.keywords && s.keywords.length ? `<div class="sc-block"><h4>מילות מפתח</h4>${tags(s.keywords, "kw")}</div>` : ""}
-    </div>`;
-
-  $("genSummaryBtn").onclick = generateSummary;
-  // Clicking on a topic/keyword -> internal search
-  el.querySelectorAll(".tag").forEach((t) =>
-    t.addEventListener("click", () => {
-      const term = t.dataset.term;
-      $("findInput").value = term;
-      doFind(term);
-    })
-  );
-}
-
+// ---------- PUAH products: client summary + consultant feedback ----------
+// These are the only two summaries shown in the transcript view. The structured
+// "automatic summary" is still produced server-side (it powers the dashboard's
+// keywords/topics) but is deliberately not rendered here.
 function renderPuahOutputs(res) {
   const el = $("puahSection");
   const cs = res.client_summary;
   const fb = res.feedback;
-  let html = "";
+  const has = cs || fb;
+
+  let html = `<div class="puah-actions"><h3>סיכומי השיחה</h3></div>`;
+
+  // Produced automatically by the worker right after the transcript PII step —
+  // there is no manual trigger. An empty state here means the generation failed
+  // (e.g. missing API key or exhausted quota); the worker log has the reason.
+  if (!has) {
+    html += `<div class="puah-card"><div class="sc-empty">
+      הסיכומים מופקים אוטומטית בסיום התמלול, ב-Google Gemini, לאחר הסרת פרטים
+      מזהים (PII) מקומית. אם הם אינם מופיעים — ההפקה נכשלה (למשל מפתח API חסר
+      או מכסה שנוצלה); הפרטים ביומן ה-worker.</div></div>`;
+  }
   if (cs)
     html += `<div class="puah-card client">
       <div class="pc-head"><h3>📩 סיכום ללקוח</h3>
@@ -421,6 +393,7 @@ function renderPuahOutputs(res) {
       <div class="pc-head"><h3>📋 משוב ליועץ (פנימי)</h3>
         <button class="btn ghost copy-btn" data-copy="fb">העתק</button></div>
       <div class="puah-text">${escapeHtml(fb)}</div></div>`;
+
   el.innerHTML = html;
   el.querySelectorAll(".copy-btn").forEach((b) =>
     b.addEventListener("click", () => {
@@ -430,35 +403,6 @@ function renderPuahOutputs(res) {
       setTimeout(() => (b.textContent = "העתק"), 1500);
     })
   );
-}
-
-async function generateSummary() {
-  const btn = $("genSummaryBtn");
-  if (!state.result) return;
-  btn.disabled = true;
-  btn.innerHTML = `<span class="spinner"></span> מסכם…`;
-  try {
-    const r = await fetch(`${API}/jobs/${state.result.job_id}/summarize`, { method: "POST" });
-    if (r.ok) {
-      state.result = await r.json();
-      renderSummary(state.result);
-      renderPuahOutputs(state.result);
-    } else {
-      const d = await r.json().catch(() => ({}));
-      const card = $("summarySection").querySelector(".summary-card");
-      if (card) {
-        card.insertAdjacentHTML(
-          "beforeend",
-          `<div class="sc-empty" style="color:var(--err);margin-top:10px">${escapeHtml(d.detail || "יצירת הסיכום נכשלה")}</div>`
-        );
-      }
-      btn.disabled = false;
-      btn.textContent = "נסה שוב";
-    }
-  } catch {
-    btn.disabled = false;
-    btn.textContent = "נסה שוב";
-  }
 }
 
 // ---------- Internal search (within the transcription) ----------

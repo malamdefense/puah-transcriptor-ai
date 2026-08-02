@@ -29,11 +29,10 @@ from .pipeline.diarize import Diarizer
 from .pipeline.export_docx import build_docx
 from .pipeline.merge import merge
 from .pipeline.pii import PIIError, deidentify_result
+from .pipeline.keywords import build_summary as build_local_summary
 from .pipeline.summarize import (
-    LLMError,
     generate_client_summary,
     generate_feedback,
-    summarize,
 )
 from .pipeline.transcribe import Transcriber
 
@@ -69,9 +68,10 @@ def _stage_progress(stage: str, inner_pct: float) -> float:
 
 def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None:
     settings = get_settings()
-    # ה-worker הוא תהליך נפרד עם מטמון הגדרות משלו (get_settings ממוטמח ב-lru_cache),
-    # ולכן מפתח שהוזן בממשק (data/secrets.json) לא היה נקלט כאן עד הפעלה מחדש.
-    # קריאה חוזרת לפני כל משימה מייקרת קריאת JSON קטנה אחת — זניח מול אורך המשימה.
+    # The worker is a separate process with its own settings cache (get_settings is
+    # lru_cached), so a key entered from the UI (data/secrets.json) would not be picked
+    # up here until a restart. Re-applying before each job costs one small JSON read —
+    # negligible compared to the job duration.
     secrets_store.apply_overrides(settings, settings.data_dir)
     job_id = job["id"]
     uploaded = settings.uploads_dir / f"{job_id}.mp4"
@@ -117,7 +117,7 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
     segments, speaker_ids = merge(asr_segments, turns)
 
     # Display names for speakers: "Speaker 1", "Speaker 2", ...
-    speakers = {sid: f"Speaker {i}" for i, sid in enumerate(speaker_ids, start=1)}
+    speakers = {sid: f"דובר {i}" for i, sid in enumerate(speaker_ids, start=1)}
 
     result = {
         "job_id": job_id,
@@ -137,38 +137,59 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
     # Full index for full search
     index_job_segments(job_id, result)
 
-    # 5) Automatic summary (best-effort — don't fail the task if the model is not available)
-    if settings.summary_enabled and segments:
-        log.info("Task %s: Summary", job_id)
-        update_job(job_id, stage="summarizing", progress=_stage_progress("summarizing", 10))
-        try:
-            result["summary"] = summarize(settings, result)
-            save_result(job_id, result)
-            log.info("Task %s: Summary generated", job_id)
-        except LLMError as exc:
-            log.warning("Task %s: Skipped summary — %s", job_id, exc)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Task %s: Error in summary (ignored) — %s", job_id, exc)
-
-        # PUAH products: client summary + feedback to the consultant (each best-effort separately)
-        if settings.client_summary_enabled:
-            try:
-                result["client_summary"] = generate_client_summary(settings, result)
-                save_result(job_id, result)
-                log.info("Task %s: Client summary generated", job_id)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Task %s: Skipped client summary — %s", job_id, exc)
-        if settings.feedback_enabled:
-            try:
-                result["feedback"] = generate_feedback(settings, result)
-                save_result(job_id, result)
-                log.info("Task %s: Feedback generated", job_id)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Task %s: Skipped feedback — %s", job_id, exc)
-
-    # 6) Word export + PII removal (best-effort — don't fail the task)
+    # 5) Word export + PII de-identification of the transcript (best-effort).
+    # Runs before the summaries so that the redacted transcript exists first, and the
+    # summaries are produced immediately after it — no manual trigger needed.
     if segments:
-        _finalize_outputs(settings, job_id, job, result)
+        _export_word(settings, job_id, job, result)
+        log.info("Task %s: PII removal", job_id)
+        _export_pii(settings, job_id, job, result)
+
+    # 6) Summaries — generated automatically right after the transcript PII step.
+    # Each product is best-effort on its own: a failure must not fail the job nor discard
+    # the transcript that was already saved.
+    produced = False
+    if segments:
+        update_job(job_id, stage="summarizing", progress=_stage_progress("summarizing", 10))
+
+        # Topics + keywords are extracted locally (no AI call): instant, offline and
+        # free. They populate the same `summary` object the dashboard aggregates over,
+        # so /api/stats keeps working exactly as before. The narrative "automatic
+        # summary" is no longer produced — the client summary and consultant feedback
+        # below are the deliverables.
+        try:
+            result["summary"] = build_local_summary(result)
+            save_result(job_id, result)
+            produced = True
+            log.info(
+                "Task %s: Topics/keywords extracted locally (%d topics, %d keywords)",
+                job_id, len(result["summary"]["topics"]), len(result["summary"]["keywords"]),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Task %s: Local topic/keyword extraction failed (ignored) — %s", job_id, exc)
+
+    # PUAH products: client summary + consultant feedback (each best-effort separately)
+    if settings.client_summary_enabled and segments:
+        try:
+            result["client_summary"] = generate_client_summary(settings, result)
+            save_result(job_id, result)
+            produced = True
+            log.info("Task %s: Client summary generated", job_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Task %s: Skipped client summary — %s", job_id, exc)
+    if settings.feedback_enabled and segments:
+        try:
+            result["feedback"] = generate_feedback(settings, result)
+            save_result(job_id, result)
+            produced = True
+            log.info("Task %s: Feedback generated", job_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Task %s: Skipped feedback — %s", job_id, exc)
+
+    # 7) Refresh the de-identified copy so it also covers the generated summaries.
+    # Skipped when nothing was produced, to avoid a redundant PII pass.
+    if produced:
+        _export_pii(settings, job_id, job, result)
 
     update_job(
         job_id,
@@ -182,36 +203,42 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
     log.info("Task %s: Completed (%d speakers, %d segments)", job_id, len(speaker_ids), len(segments))
 
 
-def _finalize_outputs(settings: Settings, job_id: str, job: dict, result: dict) -> None:
-    """Word export and PII removal — both best-effort, don't fail the task."""
-    title = job.get("original_name") or job_id
-    results_dir = settings.results_dir
+def _export_word(settings: Settings, job_id: str, job: dict, result: dict) -> None:
+    """Word export of the original transcript — best-effort, never fails the task."""
+    if not settings.word_export_enabled:
+        return
+    try:
+        build_docx(result, settings.results_dir / f"{job_id}.docx",
+                   title=job.get("original_name") or job_id)
+        log.info("Task %s: Word created", job_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Task %s: Word export failed (ignored) — %s", job_id, exc)
 
-    # Word export of the original transcription
-    if settings.word_export_enabled:
-        try:
-            build_docx(result, results_dir / f"{job_id}.docx", title=title)
-            log.info("Task %s: Word created", job_id)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Task %s: Word export failed (ignored) — %s", job_id, exc)
 
-    # PII removal: save JSON + Word masked, with .pii suffix
-    if settings.pii_enabled:
-        log.info("Task %s: PII removal", job_id)
-        try:
-            pii_result = deidentify_result(settings, result)
-            (results_dir / f"{job_id}.pii.json").write_text(
-                json.dumps(pii_result, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            if settings.word_export_enabled:
-                build_docx(
-                    pii_result, results_dir / f"{job_id}.pii.docx", title=title, deidentified=True
-                )
-            log.info("Task %s: PII version saved", job_id)
-        except PIIError as exc:
-            log.warning("Task %s: PII skipped — %s", job_id, exc)
-        except Exception as exc:
-            log.warning("Task %s: PII failed (ignored) — %s", job_id, exc)
+def _export_pii(settings: Settings, job_id: str, job: dict, result: dict) -> None:
+    """Write the de-identified copy (.pii.json / .pii.docx) — best-effort.
+
+    Called twice per job: once right after the transcript is ready (so the redacted
+    transcript exists as early as possible, and the summaries that follow are produced
+    against an already-redacted job), and once after the summaries are generated so the
+    exported copy also covers them. deidentify_result handles all fields in a single
+    subprocess call, so each pass is one PII invocation.
+    """
+    if not settings.pii_enabled:
+        return
+    try:
+        pii_result = deidentify_result(settings, result)
+        (settings.results_dir / f"{job_id}.pii.json").write_text(
+            json.dumps(pii_result, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        if settings.word_export_enabled:
+            build_docx(pii_result, settings.results_dir / f"{job_id}.pii.docx",
+                       title=job.get("original_name") or job_id, deidentified=True)
+        log.info("Task %s: PII version saved", job_id)
+    except PIIError as exc:
+        log.warning("Task %s: PII skipped — %s", job_id, exc)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Task %s: PII failed (ignored) — %s", job_id, exc)
 
 
 def main() -> None:

@@ -12,8 +12,9 @@ from typing import Optional
 
 from ..config import Settings
 
-# torchcodec נכשל בטעינה ב-Windows (חסרים DLLs של FFmpeg בגרסת shared), ואנחנו עוקפים
-# אותו לגמרי — טוענים את ה-WAV לזיכרון עם soundfile. משתיקים את האזהרה הרועשת (לא כשל).
+# torchcodec fails to load on Windows (missing FFmpeg shared DLLs); we bypass it
+# entirely by loading the WAV into memory with soundfile. The noisy warning is
+# silenced (it is not an actual failure).
 warnings.filterwarnings("ignore", message=r"(?s).*torchcodec.*")
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pyannote\.audio\.core\.io")
 

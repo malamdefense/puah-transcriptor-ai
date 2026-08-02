@@ -1,7 +1,8 @@
-"""מאגר פרומפטים הניתן לעריכה מהממשק.
+"""Prompt store, editable from the UI.
 
-ברירות המחדל מוגדרות בקוד (app/pipeline/puah_prompts.py). עריכות מהממשק נשמרות
-לקובץ data/prompts.json ודורסות את ברירות המחדל בזמן ריצה — בלי לגעת בקוד.
+Defaults live in code (app/pipeline/puah_prompts.py). Edits made from the UI are
+saved to data/prompts.json and override those defaults at runtime — without
+touching the code.
 """
 
 from __future__ import annotations
@@ -12,12 +13,11 @@ from typing import Any
 from .config import get_settings
 from .pipeline import puah_prompts
 
-# Metadata for each editable prompt: key -> (Hebrew title, default value)
-# Note: "Summary general — system instructions" (SUMMARY_SYSTEM) is not editable from the interface —
-# it is fixed in code (app/pipeline/puah_prompts.py). Only the output instructions (JSON) are exposed for editing.
+# Metadata per editable prompt: key -> (Hebrew label shown in the UI, default value).
+# Note: the labels stay in Hebrew on purpose — they are user-facing UI text.
 FIELDS: dict[str, dict[str, str]] = {
-    # "summary_instructions" הוסר מרשימת העריכה בממשק (נשאר קבוע בקוד,
-    # puah_prompts.SUMMARY_INSTRUCTIONS) — כמו SUMMARY_SYSTEM לפניו.
+    # SUMMARY_SYSTEM and SUMMARY_INSTRUCTIONS are deliberately NOT editable from the
+    # UI — they stay fixed in code (app/pipeline/puah_prompts.py).
     "puah_system": {
         "label": "עקרונות ליבה — סיכום ללקוח + משוב (הנחיית מערכת)",
         "default": puah_prompts.SYSTEM,

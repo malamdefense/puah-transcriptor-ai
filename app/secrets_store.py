@@ -58,7 +58,7 @@ def masked(value: str | None) -> str | None:
 
 def status(settings: Any) -> dict[str, Any]:
     """Status of the keys for the interface — without revealing the full value."""
-    from .config import Settings  # ייבוא עצל: קריאת ערכי ה-.env "הנקיים"
+    from .config import Settings  # lazy import: read the "clean" .env values
 
     env_only = Settings()
     overrides = _load(settings.data_dir)

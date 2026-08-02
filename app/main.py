@@ -33,12 +33,12 @@ from .db import (
 )
 from .pipeline.export import EXPORTERS
 from .pipeline.export_docx import build_docx_bytes
+from .pipeline.keywords import build_summary as build_local_summary
 from .pipeline.summarize import (
     LLMError,
     check_available,
     generate_client_summary,
     generate_feedback,
-    summarize,
 )
 from .schemas import (
     JobSummary,
@@ -166,25 +166,37 @@ def rename_speakers(job_id: str, payload: SpeakerRename) -> TranscriptResult:
 
 @app.post("/api/jobs/{job_id}/summarize", response_model=TranscriptResult)
 def summarize_job(job_id: str) -> TranscriptResult:
-    """Create/update the summary, client summary, and feedback using Gemini."""
+    """Regenerate the client summary and consultant feedback (Gemini), plus the local
+    topics/keywords metadata.
+
+    The worker already produces all of these automatically at the end of a job; this
+    endpoint is the manual recovery path (e.g. after fixing an API key or an exhausted
+    quota). Topics/keywords are extracted locally with no AI call.
+    """
     result = load_result(job_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Result not found")
-    try:
-        result["summary"] = summarize(settings, result)
-    except LLMError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    result["summary"] = build_local_summary(result)
+
     # Puah's outputs — best-effort (if one fails, still return the others)
+    errors: list[str] = []
     if settings.client_summary_enabled:
         try:
             result["client_summary"] = generate_client_summary(settings, result)
-        except LLMError:
-            pass
+        except LLMError as exc:
+            errors.append(str(exc))
     if settings.feedback_enabled:
         try:
             result["feedback"] = generate_feedback(settings, result)
-        except LLMError:
-            pass
+        except LLMError as exc:
+            errors.append(str(exc))
+
+    # Both deliverables failed and neither already existed -> surface it instead of
+    # silently returning an unchanged result.
+    if errors and not (result.get("client_summary") or result.get("feedback")):
+        raise HTTPException(status_code=503, detail=errors[0])
+
     save_result(job_id, result)
     return TranscriptResult(**result)
 

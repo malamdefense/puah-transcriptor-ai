@@ -23,7 +23,7 @@ CRITERIA = [
 ]
 
 
-# ---------- 1. דיוק תמלול (WER) ----------
+# ---------- 1. Transcription accuracy (WER) ----------
 
 def _words(text: str) -> list[str]:
     return re.findall(r"\w+", (text or "").lower(), flags=re.UNICODE)
@@ -92,7 +92,7 @@ def topic_coverage(settings: Settings, reference_summary: str, generated_summary
     return {"coverage_pct": pct, "missing_topics": [str(m) for m in missing if str(m).strip()]}
 
 
-# ---------- 4. זמן עיבוד (RTF) ----------
+# ---------- 4. Processing time (RTF) ----------
 
 def rtf(result: dict) -> Optional[float]:
     """Real-Time Factor = processing time / audio length. ≤ 3 = meets the target."""

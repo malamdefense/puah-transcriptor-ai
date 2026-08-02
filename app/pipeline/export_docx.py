@@ -64,7 +64,7 @@ def _build_document(result: dict[str, Any], title: str, deidentified: bool) -> "
     n_spk = result.get("num_speakers", len(result.get("speakers", {})))
     _add(doc, f"משך: {dur}  ·  דוברים: {n_spk}  ·  שפה: {result.get('language', 'he')}", size=10)
 
-    # סיכום
+    # Structured summary
     summ = result.get("summary")
     if summ and (summ.get("summary") or summ.get("key_points")):
         _add(doc, "סיכום אוטומטי", bold=True, size=14)
@@ -81,7 +81,7 @@ def _build_document(result: dict[str, Any], title: str, deidentified: bool) -> "
         if summ.get("keywords"):
             _add(doc, "מילות מפתח: " + " · ".join(summ["keywords"]))
 
-    # סיכום ללקוח (פוע"ה)
+    # Client summary (PUAH product)
     cs = result.get("client_summary")
     if cs:
         _add(doc, "סיכום ללקוח", bold=True, size=14)
@@ -89,7 +89,7 @@ def _build_document(result: dict[str, Any], title: str, deidentified: bool) -> "
             if para.strip():
                 _add(doc, para)
 
-    # משוב ליועץ (פנימי)
+    # Consultant feedback (internal)
     fb = result.get("feedback")
     if fb:
         _add(doc, "משוב ליועץ (פנימי)", bold=True, size=14)
@@ -97,7 +97,7 @@ def _build_document(result: dict[str, Any], title: str, deidentified: bool) -> "
             if para.strip():
                 _add(doc, para)
 
-    # תמלול
+    # Transcript
     _add(doc, "תמלול", bold=True, size=14)
     for seg in result.get("segments", []):
         name = _speaker_name(result, seg["speaker"])

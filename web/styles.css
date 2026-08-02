@@ -211,7 +211,12 @@ mark.current { background: #ff9a3c; box-shadow: 0 0 0 2px rgba(255,154,60,.4); }
 .tag.kw { background: rgba(47,125,246,.14); border-color: var(--accent-2); }
 .sc-empty { color: var(--text-dim); font-size: 14px; }
 
-/* ---- סיכום ללקוח + משוב (פוע"ה) ---- */
+/* ---- Client summary + consultant feedback (PUAH products) ---- */
+.puah-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin: 0 0 12px;
+}
+.puah-actions h3 { margin: 0; font-size: 15px; }
 .puah-card {
   background: var(--card); border: 1px solid var(--border); border-radius: 12px;
   padding: 16px 18px; margin-bottom: 14px;

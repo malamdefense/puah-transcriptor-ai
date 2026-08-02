@@ -36,7 +36,7 @@ def check_available(settings: Settings) -> bool:
     return bool(settings.gemini_api_key) and pii_available(settings)
 
 
-# ---------- בניית טקסט התמלול ----------
+# ---------- Building the transcript text ----------
 
 def build_transcript_text(result: dict[str, Any]) -> str:
     speakers = result.get("speakers", {})
@@ -94,8 +94,12 @@ def _normalize_summary(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ---------- Validation of output + retries ----------
-# Gemini tends to get stuck in loops (about 20% of the time!) and output junk tokens like <unused50> instead of a response. This is not dependent on the input length and is not deterministic — repeating the same prompt succeeds. Therefore: we validate the output, and if it is not valid — we try again with a higher temperature to break the loop.
+# ---------- Output validation + retries ----------
+# Guards against degenerate model output: empty/truncated answers, or reserved junk
+# tokens (<unused50>, <pad>) emitted instead of a real response. This was observed
+# frequently with the previous local model and is not input-length dependent nor
+# deterministic — re-running the same prompt usually succeeds. So we validate the
+# output and retry with a rising temperature to break the degenerate state.
 
 _JUNK_MARKERS = ("<unused", "<pad>", "<|", "�")
 
@@ -126,8 +130,8 @@ def _chat_checked(
             return out
         last = out
     raise LLMError(
-        f"The model returned invalid output in {attempts} attempts (probably junk). "
-        f"תחילת הפלט: {last[:80]!r}"
+        f"The model returned invalid output in {attempts} attempts (probably degenerate). "
+        f"Output starts with: {last[:80]!r}"
     )
 
 
