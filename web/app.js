@@ -16,6 +16,11 @@ const state = {
   findMarks: [],
   findIndex: -1,
   searchTimer: null,
+  view: "original",   // active transcript tab: "original" | "pii"
+  piiJobId: null,     // recording whose de-identified copy is cached below
+  piiResult: null,
+  piiError: null,
+  piiLoading: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -43,6 +48,19 @@ const STAGE_HE = {
 function speakerColor(id, speakerIds) {
   const idx = speakerIds.indexOf(id);
   return SPEAKER_COLORS[(idx >= 0 ? idx : 0) % SPEAKER_COLORS.length];
+}
+const LANG_HE = { he: "עברית", en: "אנגלית" };
+// Direction of a transcript line: from the detected segment language when there is one,
+// otherwise the browser picks it from the first strong character (old results, search hits).
+function textDir(lang) {
+  return lang === "en" ? "ltr" : lang === "he" ? "rtl" : "auto";
+}
+// Call language for the header — only when a detected call is mixed or not Hebrew;
+// plain Hebrew calls and old results (no `languages`) show nothing.
+function languageLabel(res) {
+  const langs = Array.isArray(res.languages) ? res.languages : [];
+  if (!langs.length || (langs.length === 1 && (res.language || langs[0]) === "he")) return "";
+  return "שפה: " + langs.map((l) => LANG_HE[l] || l).join(" + ");
 }
 
 // ---------- Health check ----------
@@ -208,6 +226,7 @@ async function selectJob(id) {
   hideSettings();
   state.currentJobId = id;
   state.result = null; // Clear previous result to allow automatic loading on the next poll
+  resetPiiView();      // every recording opens on the full transcript
   renderJobs();
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
@@ -258,8 +277,10 @@ function renderTranscript() {
 
   const job = state.jobs.find((j) => j.id === res.job_id);
   $("tTitle").textContent = job ? job.original_name : "תמלול";
+  const lang = languageLabel(res);
   $("tMeta").textContent =
-    `${res.num_speakers} דוברים · משך ${fmtDuration(res.duration_sec)} · ${res.segments.length} קטעים`;
+    `${res.num_speakers} דוברים · משך ${fmtDuration(res.duration_sec)} · ${res.segments.length} קטעים` +
+    (lang ? ` · ${lang}` : "");
 
   // Export links
   $("expWord").href = `${API}/jobs/${res.job_id}/export?format=docx`;
@@ -297,21 +318,37 @@ function renderTranscript() {
     legend.appendChild(chip);
   }
 
-  // Reset internal search and build segments
+  // Reset internal search and build segments (keeping the active tab)
   $("findInput").value = "";
   state.findQuery = "";
-  renderSegments("");
+  updateTabs();
+  if (state.view === "pii") void switchView("pii");
+  else { renderPiiNotice(); renderSegments(""); }
 
   // Highlight the currently playing segment
   player.ontimeupdate = () => highlightSegment(player.currentTime);
 }
 
-// Build segments, with optional internal search highlighting
+// Build segments, with optional internal search highlighting.
+// Renders either the full transcript or the de-identified (PII) copy, per the active tab.
 function renderSegments(query) {
-  const res = state.result;
-  if (!res) return;
-  const speakerIds = Object.keys(res.speakers);
+  const pii = state.view === "pii";
+  const res = pii ? state.piiResult : state.result;
   const segWrap = $("segments");
+
+  if (!res) {
+    // PII tab with nothing loaded yet (or unavailable) — #piiNotice above carries the explanation
+    if (pii) {
+      segWrap.innerHTML = state.piiLoading ? `<div class="dash-empty">טוען…</div>` : "";
+      updateFindState();
+    }
+    return;
+  }
+
+  // Speaker names and colours always come from the live transcript, so both tabs stay in
+  // sync with the editable legend above (the PII copy may hold names from before a rename).
+  const names = (state.result && state.result.speakers) || res.speakers;
+  const speakerIds = Object.keys(names);
   segWrap.innerHTML = "";
 
   res.segments.forEach((seg, i) => {
@@ -324,10 +361,10 @@ function renderSegments(query) {
     div.dataset.idx = i;
     div.innerHTML = `
       <div class="seg-head">
-        <span class="seg-speaker" style="color:${color}">${escapeHtml(res.speakers[seg.speaker] || seg.speaker)}</span>
+        <span class="seg-speaker" style="color:${color}">${escapeHtml(names[seg.speaker] || seg.speaker)}</span>
         <span class="seg-time">${fmtClock(seg.start)} – ${fmtClock(seg.end)}</span>
       </div>
-      <div class="seg-text">${highlightHtml(seg.text, query)}</div>`;
+      <div class="seg-text" dir="${textDir(seg.language)}">${pii ? piiHtml(seg.text, query) : highlightHtml(seg.text, query)}</div>`;
     div.onclick = () => { const p = $("player"); p.currentTime = seg.start; p.play(); };
     segWrap.appendChild(div);
   });
@@ -383,26 +420,164 @@ function renderPuahOutputs(res) {
       מזהים (PII) מקומית. אם הם אינם מופיעים — ההפקה נכשלה (למשל מפתח API חסר
       או מכסה שנוצלה); הפרטים ביומן ה-worker.</div></div>`;
   }
+  // Redaction-placeholder check of each text (server record: labels only, never text).
+  // residual = tags still in the stored text (results from before the guard); sanitized = the
+  // tags were removed automatically after the retries, so a detail may be missing from a
+  // sentence. Repaired by a retry, or clean: nothing to show.
+  const ck = res.client_summary_check || {};
+  const fk = res.feedback_check || {};
+  const csTagged = Array.isArray(ck.residual) && ck.residual.length > 0;
+  const fbTagged = Array.isArray(fk.residual) && fk.residual.length > 0;
+  let csNote = "";
+  if (csTagged)
+    csNote = `<div class="pii-notice err"><b>הסיכום מכיל תגיות הסתרה — אין לשלוח לפונה לפני תיקון</b>
+      · ${tagLabelsHtml(ck.residual)}</div>`;
+  else if (ck.sanitized)
+    csNote = `<div class="pii-notice warn">תגיות הסתרה הוסרו אוטומטית מהסיכום. מומלץ לקרוא אותו לפני השליחה.
+      · ${tagLabelsHtml(ck.tags_found)}</div>`;
+  // The feedback is internal: a muted note only.
+  let fbNote = "";
+  if (fbTagged) fbNote = `<div class="pii-notice">המשוב מכיל תגיות הסתרה · ${tagLabelsHtml(fk.residual)}</div>`;
+  else if (fk.sanitized)
+    fbNote = `<div class="pii-notice">תגיות הסתרה הוסרו אוטומטית מהמשוב · ${tagLabelsHtml(fk.tags_found)}</div>`;
+
   if (cs)
     html += `<div class="puah-card client">
       <div class="pc-head"><h3>📩 סיכום ללקוח</h3>
         <button class="btn ghost copy-btn" data-copy="cs">העתק</button></div>
-      <div class="puah-text">${escapeHtml(cs)}</div></div>`;
+      ${csNote}<div class="puah-text">${csTagged ? piiHtml(cs, "") : escapeHtml(cs)}</div></div>`;
   if (fb)
     html += `<div class="puah-card feedback">
       <div class="pc-head"><h3>📋 משוב ליועץ (פנימי)</h3>
         <button class="btn ghost copy-btn" data-copy="fb">העתק</button></div>
-      <div class="puah-text">${escapeHtml(fb)}</div></div>`;
+      ${fbNote}<div class="puah-text">${fbTagged ? piiHtml(fb, "") : escapeHtml(fb)}</div></div>`;
 
   el.innerHTML = html;
   el.querySelectorAll(".copy-btn").forEach((b) =>
     b.addEventListener("click", () => {
-      const txt = b.dataset.copy === "cs" ? cs : fb;
+      const isCs = b.dataset.copy === "cs";
+      // The client summary goes straight to the caller: a tag left in it needs a conscious yes.
+      if (isCs && csTagged && !confirm("הסיכום מכיל תגיות הסתרה. להעתיק בכל זאת?")) return;
+      const txt = isCs ? cs : fb;
       if (navigator.clipboard) navigator.clipboard.writeText(txt);
       b.textContent = "הועתק ✓";
       setTimeout(() => (b.textContent = "העתק"), 1500);
     })
   );
+}
+
+// Placeholder labels of a check record as tag chips (the labels themselves contain < >).
+function tagLabelsHtml(labels) {
+  return (Array.isArray(labels) ? labels : [])
+    .map((l) => `<span class="pii-tag">${escapeHtml(l)}</span>`)
+    .join(" ");
+}
+
+// ---------- Tabs: full transcript / de-identified (PII) transcript ----------
+// Both tabs feed the same #segments container, so the find bar, the "currently playing"
+// highlight and click-to-seek keep working unchanged — only the text source differs.
+function setupTabs() {
+  $("tabOriginal").addEventListener("click", () => switchView("original"));
+  $("tabPii").addEventListener("click", () => switchView("pii"));
+  $("transcriptTabs").addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    switchView(state.view === "pii" ? "original" : "pii");
+    $(state.view === "pii" ? "tabPii" : "tabOriginal").focus();
+  });
+}
+
+function resetPiiView() {
+  state.view = "original";
+  state.piiJobId = null;
+  state.piiResult = null;
+  state.piiError = null;
+  state.piiLoading = false;
+}
+
+function updateTabs() {
+  const pii = state.view === "pii";
+  $("tabOriginal").classList.toggle("active", !pii);
+  $("tabPii").classList.toggle("active", pii);
+  $("tabOriginal").setAttribute("aria-selected", String(!pii));
+  $("tabPii").setAttribute("aria-selected", String(pii));
+}
+
+async function switchView(view) {
+  state.view = view;
+  updateTabs();
+
+  const res = state.result;
+  if (view === "pii" && res) {
+    const jobId = res.job_id;
+    await ensurePiiResult(jobId);
+    // The tab or the recording may have changed while the request was in flight
+    if (state.view !== "pii" || !state.result || state.result.job_id !== jobId) return;
+  }
+  renderPiiNotice();
+  renderSegments(state.findQuery);
+}
+
+// Fetch the de-identified copy once per recording and cache it in state.
+// 404 here is a normal outcome (PII removal disabled, or the job predates it).
+async function ensurePiiResult(jobId) {
+  if (state.piiJobId === jobId && (state.piiResult || state.piiError)) return;
+  state.piiJobId = jobId;
+  state.piiResult = null;
+  state.piiError = null;
+  state.piiLoading = true;
+  renderPiiNotice();
+  renderSegments(state.findQuery);
+  try {
+    const r = await fetch(`${API}/jobs/${jobId}/pii?format=json`);
+    if (!r.ok) {
+      if (r.status === 404) {
+        throw new Error(
+          "לא נוצרה להקלטה זו גרסה ללא פרטים מזהים " +
+          "(ייתכן ששלב ה-PII דולג או נכשל). הפרטים ביומן ה-worker."
+        );
+      }
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.detail || `שגיאה ${r.status}`);
+    }
+    const data = await r.json();
+    if (state.piiJobId !== jobId) return;
+    state.piiResult = data;
+  } catch (err) {
+    if (state.piiJobId !== jobId) return;
+    state.piiError = err.message || "טעינת גרסת ה-PII נכשלה";
+  } finally {
+    if (state.piiJobId === jobId) state.piiLoading = false;
+  }
+}
+
+function renderPiiNotice() {
+  const el = $("piiNotice");
+  const hide = () => { el.className = "pii-notice hidden"; el.innerHTML = ""; };
+  if (state.view !== "pii") return hide();
+
+  el.className = "pii-notice";
+  if (state.piiLoading) {
+    el.innerHTML = `<span class="spinner"></span> טוען את גרסת ה-PII…`;
+    return;
+  }
+  if (state.piiError) {
+    el.className = "pii-notice err";
+    el.innerHTML = `<b>גרסת PII אינה זמינה</b> — ${escapeHtml(state.piiError)}`;
+    return;
+  }
+  const res = state.piiResult;
+  if (!res) return hide();
+
+  const n = countPiiTags(res.segments);
+  const engines = (res.pii_engines || []).join(", ");
+  const removed = n
+    ? `הוסרו <b>${n}</b> פרטים מזהים והוחלפו בתגיות כגון <span class="pii-tag">&lt;שם_&gt;</span>`
+    : `לא נמצאו פרטים מזהים בתמלול זה`;
+  el.innerHTML =
+    `<b>תמלול ללא פרטים מזהים</b> — ` +
+    `זו הגרסה שנשלחת ל-Gemini להפקת הסיכומים. ` +
+    `${removed}${engines ? ` · מנועי זיהוי: ${escapeHtml(engines)}` : ""}.`;
 }
 
 // ---------- Internal search (within the transcription) ----------
@@ -469,7 +644,7 @@ async function runGlobalSearch(q) {
             <span class="sr-name">${escapeHtml(m.original_name)}</span>
             <span>${escapeHtml(m.speaker)} · ${fmtClock(m.start)}</span>
           </div>
-          <div class="sr-text">${highlightHtml(m.text, q)}</div>
+          <div class="sr-text" dir="auto">${highlightHtml(m.text, q)}</div>
         </div>`;
     }
     box.innerHTML = html;
@@ -501,6 +676,26 @@ async function openSearchResult(jobId, start, query) {
 }
 
 // ---------- Highlighting terms ----------
+// The redaction placeholders (<שם_>, <מספר_טלפון> …) get a visible tag style.
+// The raw text is split on the placeholders first and each piece escaped/highlighted on its
+// own, so a search hit *inside* a placeholder nests a <mark> in the tag instead of splitting it.
+function piiHtml(text, query) {
+  return String(text || "")
+    .split(/(<[^<>]*>)/g)
+    .map((part) =>
+      /^<[^<>]*>$/.test(part)
+        ? `<span class="pii-tag">${highlightHtml(part, query)}</span>`
+        : highlightHtml(part, query)
+    )
+    .join("");
+}
+
+function countPiiTags(segments) {
+  let n = 0;
+  for (const seg of segments || []) n += (String(seg.text || "").match(/<[^<>]*>/g) || []).length;
+  return n;
+}
+
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -812,6 +1007,7 @@ function setupSettings() {
 checkHealth();
 setupUpload();
 setupFind();
+setupTabs();
 setupGlobalSearch();
 setupSettings();
 applyBranding();

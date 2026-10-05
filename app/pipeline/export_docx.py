@@ -12,6 +12,8 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 
 from .export import _fmt_clock, _speaker_name
+from .language import LANGUAGE_NAMES_HE
+from .output_guard import sanitize_caller_text
 
 
 def _rtl(paragraph) -> None:
@@ -50,7 +52,15 @@ def _bullets(doc, items: list[str]) -> None:
         _rtl_run(run)
 
 
-def _build_document(result: dict[str, Any], title: str, deidentified: bool) -> "Document":
+def _language_label(result: dict[str, Any]) -> str:
+    """Hebrew names of the call's languages ("אנגלית + עברית"); old results have only `language`."""
+    codes = result.get("languages") or [result.get("language", "he")]
+    return " + ".join(LANGUAGE_NAMES_HE.get(c, c) for c in codes)
+
+
+def _build_document(
+    result: dict[str, Any], title: str, deidentified: bool, templates: dict[str, str] | None = None
+) -> "Document":
     doc = Document()
 
     heading = doc.add_heading(title or "תמלול", level=0)
@@ -62,7 +72,7 @@ def _build_document(result: dict[str, Any], title: str, deidentified: bool) -> "
 
     dur = _fmt_clock(result.get("duration_sec", 0.0))
     n_spk = result.get("num_speakers", len(result.get("speakers", {})))
-    _add(doc, f"משך: {dur}  ·  דוברים: {n_spk}  ·  שפה: {result.get('language', 'he')}", size=10)
+    _add(doc, f"משך: {dur}  ·  דוברים: {n_spk}  ·  שפה: {_language_label(result)}", size=10)
 
     # Structured summary
     summ = result.get("summary")
@@ -81,8 +91,16 @@ def _build_document(result: dict[str, Any], title: str, deidentified: bool) -> "
         if summ.get("keywords"):
             _add(doc, "מילות מפתח: " + " · ".join(summ["keywords"]))
 
-    # Client summary (PUAH product)
+    # Client summary (PUAH product). The original-transcript document must never carry a
+    # redaction placeholder (results from before the guard): a no-op for clean text. The
+    # de-identified document keeps its tags — they are the point of that copy.
     cs = result.get("client_summary")
+    fb = result.get("feedback")
+    if not deidentified:
+        # With the raw task prompts, a copied template line comes back verbatim (same as the Excel)
+        tpl = templates or {}
+        cs = sanitize_caller_text(str(cs), template=tpl.get("client_summary"))[0] if cs else cs
+        fb = sanitize_caller_text(str(fb), template=tpl.get("feedback"))[0] if fb else fb
     if cs:
         _add(doc, "סיכום ללקוח", bold=True, size=14)
         for para in str(cs).split("\n"):
@@ -90,7 +108,6 @@ def _build_document(result: dict[str, Any], title: str, deidentified: bool) -> "
                 _add(doc, para)
 
     # Consultant feedback (internal)
-    fb = result.get("feedback")
     if fb:
         _add(doc, "משוב ליועץ (פנימי)", bold=True, size=14)
         for para in str(fb).split("\n"):
@@ -102,12 +119,21 @@ def _build_document(result: dict[str, Any], title: str, deidentified: bool) -> "
     for seg in result.get("segments", []):
         name = _speaker_name(result, seg["speaker"])
         p = doc.add_paragraph()
-        _rtl(p)
+        # English segments (language detected from the script) read left to right
+        ltr = seg.get("language") == "en"
+        if ltr:
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        else:
+            _rtl(p)
         prefix = p.add_run(f"[{_fmt_clock(seg['start'])}] {name}: ")
         prefix.bold = True
-        _rtl_run(prefix)
+        if ltr:
+            prefix.font.cs_bold = True  # Word bolds a Hebrew speaker name via bCs, not b
+        else:
+            _rtl_run(prefix)
         body = p.add_run(seg.get("text", ""))
-        _rtl_run(body)
+        if not ltr:
+            _rtl_run(body)
 
     return doc
 
@@ -117,20 +143,27 @@ def build_docx(
     path: str | Path,
     title: str,
     deidentified: bool = False,
+    templates: dict[str, str] | None = None,
 ) -> Path:
-    """Build a Word document from the transcript and save it to path. Return the path."""
-    doc = _build_document(result, title, deidentified)
+    """Build a Word document from the transcript and save it to path. Return the path.
+
+    templates — the raw task prompts ({"client_summary": ..., "feedback": ...}) used to restore a
+    template line if a stored text still holds a redaction placeholder.
+    """
+    doc = _build_document(result, title, deidentified, templates)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))
     return path
 
 
-def build_docx_bytes(result: dict[str, Any], title: str, deidentified: bool = False) -> bytes:
+def build_docx_bytes(
+    result: dict[str, Any], title: str, deidentified: bool = False, templates: dict[str, str] | None = None
+) -> bytes:
     """Build a Word document and return its content as bytes (for direct download)."""
     import io
 
-    doc = _build_document(result, title, deidentified)
+    doc = _build_document(result, title, deidentified, templates)
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()

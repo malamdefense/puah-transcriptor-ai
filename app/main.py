@@ -6,6 +6,7 @@ Heavy processing is performed in the separate worker process (app/worker.py).
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -34,6 +35,8 @@ from .db import (
 from .pipeline.export import EXPORTERS
 from .pipeline.export_docx import build_docx_bytes
 from .pipeline.keywords import build_summary as build_local_summary
+from .pipeline.output_guard import legacy_check, sanitize_caller_text
+from .pipeline.pii import PIIError, deidentify_result, pii_download_name, pii_title
 from .pipeline.summarize import (
     LLMError,
     check_available,
@@ -49,6 +52,7 @@ from .schemas import (
 )
 
 settings = get_settings()
+log = logging.getLogger(__name__)
 
 app = FastAPI(title="Puah Transcription System", version=__version__)
 app.add_middleware(
@@ -147,7 +151,18 @@ def job_result(job_id: str) -> TranscriptResult:
     result = load_result(job_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Result file missing")
-    return TranscriptResult(**result)
+    return TranscriptResult(**_with_legacy_checks(result))
+
+
+def _with_legacy_checks(result: dict) -> dict:
+    """Results produced before the placeholder guard carry no check record: compute one on the
+    fly, so the UI still flags a summary that holds a redaction tag. Call it only after the
+    result was saved — the record is never persisted. Every endpoint that returns a
+    TranscriptResult uses it: the UI renders whichever one answered last (e.g. a rename)."""
+    for key in ("client_summary", "feedback"):
+        if result.get(key) and not result.get(f"{key}_check"):
+            result[f"{key}_check"] = legacy_check(result[key])
+    return result
 
 
 @app.put("/api/jobs/{job_id}/speakers", response_model=TranscriptResult)
@@ -161,7 +176,7 @@ def rename_speakers(job_id: str, payload: SpeakerRename) -> TranscriptResult:
             result["speakers"][sid] = name.strip()
     save_result(job_id, result)
     index_job_segments(job_id, result)  # Re-index the search with the updated names
-    return TranscriptResult(**result)
+    return TranscriptResult(**_with_legacy_checks(result))
 
 
 @app.post("/api/jobs/{job_id}/summarize", response_model=TranscriptResult)
@@ -177,18 +192,39 @@ def summarize_job(job_id: str) -> TranscriptResult:
     if result is None:
         raise HTTPException(status_code=404, detail="Result not found")
 
-    result["summary"] = build_local_summary(result)
+    # Keywords come from the de-identified copy when there is one: they reach the dashboard.
+    keyword_source = result
+    pii_path = settings.results_dir / f"{job_id}.pii.json"
+    if pii_path.exists():
+        import json as _json
+
+        try:
+            keyword_source = _json.loads(pii_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            keyword_source = result
+    result["summary"] = build_local_summary(keyword_source)
 
     # Puah's outputs — best-effort (if one fails, still return the others)
+    # Each text is stored with its placeholder-check record (labels only), like the worker does.
     errors: list[str] = []
     if settings.client_summary_enabled:
         try:
-            result["client_summary"] = generate_client_summary(settings, result)
+            check: dict = {}
+            result["client_summary"] = generate_client_summary(settings, result, report=check)
+            if check:
+                result["client_summary_check"] = check
+            else:
+                result.pop("client_summary_check", None)
         except LLMError as exc:
             errors.append(str(exc))
     if settings.feedback_enabled:
         try:
-            result["feedback"] = generate_feedback(settings, result)
+            check = {}
+            result["feedback"] = generate_feedback(settings, result, report=check)
+            if check:
+                result["feedback_check"] = check
+            else:
+                result.pop("feedback_check", None)
         except LLMError as exc:
             errors.append(str(exc))
 
@@ -198,7 +234,22 @@ def summarize_job(job_id: str) -> TranscriptResult:
         raise HTTPException(status_code=503, detail=errors[0])
 
     save_result(job_id, result)
-    return TranscriptResult(**result)
+
+    # Refresh the de-identified copy so it carries the new summaries too — otherwise the PII
+    # export keeps the previous ones. Best-effort, like the worker's: a failure leaves the old
+    # copy in place and never fails the request.
+    if settings.pii_enabled:
+        import json as _json
+
+        try:
+            pii_result = deidentify_result(settings, result)
+            (settings.results_dir / f"{job_id}.pii.json").write_text(
+                _json.dumps(pii_result, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            (settings.results_dir / f"{job_id}.pii.docx").unlink(missing_ok=True)  # rebuilt on demand
+        except (PIIError, OSError):
+            pass
+    return TranscriptResult(**_with_legacy_checks(result))
 
 
 @app.get("/api/export/feedback.xlsx")
@@ -220,6 +271,11 @@ def export_feedback_xlsx() -> Response:
     ws.column_dimensions["B"].width = 70
     ws.column_dimensions["C"].width = 70
 
+    # Re-check on the way out: a redaction placeholder must never reach the sheet (results from
+    # before the guard, or a hand-edited file). A no-op for clean text; labels only in the log.
+    cs_template = prompts_store.get("client_summary_task")
+    fb_template = prompts_store.get("feedback_task")
+
     rows = 0
     for job in list_jobs():
         if job["status"] != "done":
@@ -231,6 +287,16 @@ def export_feedback_xlsx() -> Response:
         fb = res.get("feedback")
         if not cs and not fb:
             continue
+        if cs:
+            cs, removed = sanitize_caller_text(cs, template=cs_template)
+            if removed:
+                log.warning("Excel export: job %s client summary held redaction placeholders %s; sanitised",
+                            job["id"], sorted(set(removed)))
+        if fb:
+            fb, removed = sanitize_caller_text(fb, template=fb_template)
+            if removed:
+                log.warning("Excel export: job %s feedback held redaction placeholders %s; sanitised",
+                            job["id"], sorted(set(removed)))
         name = (job.get("original_name") or job["id"]).rsplit(".", 1)[0]
         ws.append([name, cs or "", fb or ""])
         rows += 1
@@ -254,12 +320,17 @@ def llm_status() -> dict:
     a master summary_enabled flag which kept reporting the engine as off while the
     worker was in fact still producing summaries.
     """
+    from .pipeline.pii import pii_engine_status
+
     enabled = settings.client_summary_enabled or settings.feedback_enabled
     return {
         "enabled": enabled,
         "available": enabled and check_available(settings),
         "model": settings.gemini_model,
         "provider": "gemini",
+        "api_key_set": bool(settings.gemini_api_key),
+        # Why, when "available" is False: a bare False sent us hunting the wrong dependency once.
+        "pii_engines": pii_engine_status(settings),
     }
 
 
@@ -456,7 +527,12 @@ def export(job_id: str, format: str = "txt") -> Response:
         raise HTTPException(status_code=404, detail="Result not found")
 
     if fmt == "docx":
-        content = build_docx_bytes(result, title=_download_name(job_id, "", "").rstrip("."))
+        content = build_docx_bytes(
+            result,
+            title=_download_name(job_id, "", "").rstrip("."),
+            templates={"client_summary": prompts_store.get("client_summary_task"),
+                       "feedback": prompts_store.get("feedback_task")},
+        )
         return Response(
             content=content,
             media_type=_DOCX_MIME,
@@ -481,28 +557,29 @@ def export_pii(job_id: str, format: str = "json") -> Response:
     if not pii_json.exists():
         raise HTTPException(status_code=404, detail="PII-removed version not found (maybe PII removal was skipped)")
 
+    # Neutral names: the upload's file name often carries a person's name and the call's time.
     if fmt == "json":
         return FileResponse(
             pii_json,
             media_type="application/json",
-            filename=_download_name(job_id, ".pii", "json"),
+            filename=pii_download_name(job_id, "json"),
         )
     if fmt == "docx":
         pii_docx = settings.results_dir / f"{job_id}.pii.docx"
         if pii_docx.exists():
-            return FileResponse(pii_docx, media_type=_DOCX_MIME, filename=_download_name(job_id, ".pii", "docx"))
+            return FileResponse(pii_docx, media_type=_DOCX_MIME, filename=pii_download_name(job_id, "docx"))
         # Build from JSON if the docx file is missing
         import json as _json
 
         content = build_docx_bytes(
             _json.loads(pii_json.read_text(encoding="utf-8")),
-            title=_download_name(job_id, ".pii", "").rstrip("."),
+            title=pii_title(job_id),
             deidentified=True,
         )
         return Response(
             content=content,
             media_type=_DOCX_MIME,
-            headers=_content_disposition(_download_name(job_id, ".pii", "docx")),
+            headers=_content_disposition(pii_download_name(job_id, "docx")),
         )
     raise HTTPException(status_code=400, detail=f"Unsupported format: {fmt}")
 
@@ -524,7 +601,7 @@ def remove_job(job_id: str) -> Response:
     (settings.uploads_dir / f"{job_id}.mp4").unlink(missing_ok=True)
     (settings.audio_dir / f"{job_id}.wav").unlink(missing_ok=True)
     result_path(job_id).unlink(missing_ok=True)
-    for extra in (f"{job_id}.docx", f"{job_id}.pii.json", f"{job_id}.pii.docx"):
+    for extra in (f"{job_id}.docx", f"{job_id}.pii.json", f"{job_id}.pii.docx", f"{job_id}.diar.json"):
         (settings.results_dir / extra).unlink(missing_ok=True)
     delete_job(job_id)
     return Response(status_code=204)

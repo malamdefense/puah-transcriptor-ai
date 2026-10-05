@@ -198,6 +198,16 @@
 
         <div id="speakerLegend" class="legend"></div>
 
+        <div class="tabs" id="transcriptTabs" role="tablist" aria-label="תצוגות תמלול">
+          <button type="button" id="tabOriginal" class="tab active" role="tab"
+                  aria-selected="true" aria-controls="segments">תמלול מלא</button>
+          <button type="button" id="tabPii" class="tab" role="tab"
+                  aria-selected="false" aria-controls="segments"
+                  title="הגרסה שעברה הסרת פרטים מזהים">תמלול PII (ללא פרטים מזהים)</button>
+        </div>
+
+        <div id="piiNotice" class="pii-notice hidden"></div>
+
         <div class="findbar">
           <input id="findInput" type="search" placeholder="חיפוש בתוך התמלול…" />
           <span id="findCount" class="find-count"></span>

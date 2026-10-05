@@ -27,7 +27,41 @@ for _name in (
         setattr(collections, _name, getattr(_abc, _name))
 
 
+def keep_countries() -> None:
+    """Leave country names as they are.
+
+    HebSafeHarbor's default COUNTRY operator does not tag a country — it *rewrites* it as its
+    region ("אוסטרליה" -> "אוסטרליה ואוקיאניה"), inserting words the speaker never said into the
+    de-identified transcript and into the text sent to the summariser. A country is not an
+    identifier (HIPAA Safe Harbor keeps it), and where a caller lives abroad is useful context.
+    Patched here, in our runner, rather than in the installed library.
+    """
+    from hebsafeharbor.anonymizer.custom_operators.country_anonymizer_operator import (
+        CountryAnonymizerOperator,
+    )
+
+    CountryAnonymizerOperator.operate = lambda self, text, params=None: text
+
+
+def probe() -> int:
+    """--probe: can HebSafeHarbor be imported here at all?
+
+    Imports only — constructing HebSafeHarbor() loads a transformer and costs tens of seconds.
+    app/pipeline/pii.py uses this to tell "the files are on disk" apart from "the engine runs".
+    """
+    try:
+        from hebsafeharbor import HebSafeHarbor  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        print(f"hebsafeharbor not available: {exc}", file=sys.stderr)
+        return 3
+    return 0
+
+
 def main() -> int:
+    # Answered before stdin is touched — a probe sends no payload.
+    if "--probe" in sys.argv[1:]:
+        return probe()
+
     # Read stdin as UTF-8 explicitly (not dependent on the default encoding of Windows/locale)
     try:
         raw = sys.stdin.buffer.read().decode("utf-8")
@@ -47,6 +81,7 @@ def main() -> int:
         print(f"hebsafeharbor not available: {exc}", file=sys.stderr)
         return 3
 
+    keep_countries()
     hsh = HebSafeHarbor()
 
     nonempty_idx = [i for i, t in enumerate(texts) if t and str(t).strip()]

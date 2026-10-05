@@ -42,6 +42,7 @@ class Segment(BaseModel):
     speaker: str
     text: str
     words: list[Word] = []
+    language: Optional[str] = None  # detected from the segment's script ("he"/"en"); None for old results
 
 
 class Summary(BaseModel):
@@ -65,6 +66,12 @@ class TranscriptResult(BaseModel):
     summary: Optional[Summary] = None
     client_summary: Optional[str] = None
     feedback: Optional[str] = None
+    # Language detection (after merge): every language with a real share, and the shares themselves
+    languages: list[str] = []
+    language_shares: dict[str, float] = {}
+    # Placeholder-tag check of the generated texts (labels and counts only, never text)
+    client_summary_check: Optional[dict] = None
+    feedback_check: Optional[dict] = None
 
 
 class SpeakerRename(BaseModel):

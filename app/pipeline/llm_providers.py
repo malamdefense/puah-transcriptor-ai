@@ -25,6 +25,7 @@ from abc import ABC, abstractmethod
 from typing import Any, final
 
 from ..config import Settings
+from . import import_failure_reason
 
 
 class LLMError(RuntimeError):
@@ -90,7 +91,9 @@ class GeminiModelProvider(BaseLLMProvider):
             from google.genai import types
         except ImportError as exc:
             raise LLMError(
-                "The google-genai package is not installed. Run: pip install google-genai"
+                import_failure_reason(
+                    exc, "google.genai", "pip install google-genai", package="google-genai"
+                )
             ) from exc
         return {"genai": genai, "types": types}
 

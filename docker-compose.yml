@@ -1,0 +1,68 @@
+# הרצת המערכת On-Prem: Ollama + API + worker, חולקים נתונים ו-GPU.
+# דורש nvidia-container-toolkit מותקן על המארח.
+# הערה: הסרת PII (HebSafeHarbor) אינה כלולה כאן — ראו DEPLOYMENT.md סעיף 10.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ./data/ollama:/root/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # משיכת מודל ה-embedding אוטומטית בעלייה הראשונה (רץ פעם אחת ומסיים).
+  # bge-m3 — embeddings ל-RAG הסמנטי. הסיכום/משוב מופקים ב-Gemini (ענן), ולכן
+  # אין יותר צורך במודל שפה מקומי (gemma4 הוסר) — חיסכון של ~8GB.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "until ollama list >/dev/null 2>&1; do echo 'ממתין ל-Ollama…'; sleep 2; done;
+       ollama pull bge-m3 && echo '✓ מודל ה-embedding מוכן'"
+    restart: "no"
+
+  api:
+    build: .
+    image: puah-transcribe:latest
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - PUAH_LLM_BASE_URL=http://ollama:11434/v1   # שירות ה-Ollama של compose
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  worker:
+    build: .
+    image: puah-transcribe:latest
+    command: python -m app.worker
+    env_file: .env
+    environment:
+      - PUAH_LLM_BASE_URL=http://ollama:11434/v1
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    # הקצאת GPU ל-worker (הוא זה שמריץ את מודלי התמלול והזיהוי)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

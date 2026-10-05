@@ -69,7 +69,7 @@ sed -i "s|^PUAH_HF_TOKEN=.*|PUAH_HF_TOKEN=${HF_TOKEN}|"        "$APP_DIR/.env"
 sed -i "s|^PUAH_EMBED_MODEL=.*|PUAH_EMBED_MODEL=${EMBED_MODEL}|" "$APP_DIR/.env"
 chown puah:puah "$APP_DIR/.env" && chmod 600 "$APP_DIR/.env"
 
-# ---------- 6. התקנת התלויות (venv ראשי + .venv-pii) ----------
+# ---------- 6. התקנת התלויות (venv ראשי + .venv-pii + .venv-presidio) ----------
 # Ubuntu 22.04 מגיע עם Python 3.10 — מתאים גם לאפליקציה וגם ל-HebSafeHarbor.
 echo "--- מתקין תלויות (עשוי לקחת מספר דקות) ---"
 cd "$APP_DIR"

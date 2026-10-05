@@ -23,6 +23,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -45,6 +46,28 @@ VENV = ROOT / ".venv"
 MARKER = VENV / ".puah_deps_ok"  # Marker that the dependencies were installed successfully
 PII_VENV = ROOT / ".venv-pii"
 PII_MARKER = PII_VENV / ".puah_pii_ok"
+# Second PII engine (Presidio, current release) — its own venv: needs numpy<2.5 / spaCy>=3.4,
+# which fits neither .venv (numpy 2.5 + CUDA torch) nor .venv-pii (HebSafeHarbor pins Presidio 2.2.31).
+PII_RUNNER = ROOT / "app" / "pii_runner.py"
+PRESIDIO_RUNNER = ROOT / "app" / "presidio_runner.py"
+
+# Samples the verification redacts. Each carries more than one independent signal, so a single
+# recogniser going quiet does not fail a healthy install:
+#   - HebSafeHarbor: a personal name and a city, both plain Hebrew NER.
+#   - Presidio: an Israeli ID that passes the national checksum (123456782 does; a random
+#     9-digit number does not, and would silently never match) plus an e-mail address, which
+#     is the most deterministic built-in recogniser there is.
+PII_SAMPLE_HEB = "\u05e9\u05de\u05d9 \u05d9\u05d5\u05e1\u05d9 \u05db\u05d4\u05df \u05d5\u05d0\u05e0\u05d9 \u05d2\u05e8 \u05d1\u05ea\u05dc \u05d0\u05d1\u05d9\u05d1."
+PII_SAMPLE_PRESIDIO = (
+    "\u05ea\u05e2\u05d5\u05d3\u05ea \u05d4\u05d6\u05d4\u05d5\u05ea \u05e9\u05dc\u05d9 \u05d4\u05d9\u05d0 123456782 "
+    "\u05d5\u05d4\u05de\u05d9\u05d9\u05dc \u05e9\u05dc\u05d9 yossi@example.com."
+)
+VERIFY_TIMEOUT_HEB = 900.0       # loads a transformer on first use
+VERIFY_TIMEOUT_PRESIDIO = 300.0
+PROBE_TIMEOUT = 120.0
+
+PRESIDIO_VENV = ROOT / ".venv-presidio"
+PRESIDIO_MARKER = PRESIDIO_VENV / ".puah_presidio_ok"
 # cu128 = CUDA 12.8 — supports Ampere/Ada/Hopper/Blackwell. For older GPUs, use --cuda-index cu124.
 CUDA_INDEX = "https://download.pytorch.org/whl/cu128"
 
@@ -91,6 +114,81 @@ def install_deps(py: Path, cpu: bool, cuda_index: str = CUDA_INDEX) -> None:
     log("All dependencies installed.", "ok")
 
 
+def _run_engine(py: Path, runner: Path, payload: dict, timeout: float) -> tuple[bool, str, list]:
+    """Call a PII runner over its normal JSON protocol. Returns (ok, reason, texts)."""
+    try:
+        proc = subprocess.run(
+            [str(py), str(runner)],
+            input=json.dumps(payload, ensure_ascii=False),
+            capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"no answer within {timeout:g}s", []
+    except OSError as exc:
+        return False, f"could not be started ({py}): {exc}", []
+
+    if proc.returncode != 0:
+        # Both runners print one summary line before giving up; presidio_runner precedes it with
+        # a note per stubbed spaCy extension, so the last line is the informative one.
+        lines = [ln for ln in (proc.stderr or "").splitlines() if ln.strip()]
+        return False, (lines[-1].strip()[:300] if lines else f"exit code {proc.returncode}"), []
+
+    try:
+        texts = json.loads(proc.stdout)["texts"]
+    except Exception as exc:  # noqa: BLE001
+        return False, f"unexpected output: {exc}", []
+    return True, "", texts
+
+
+def verify_engine(py: Path, runner: Path, label: str, sample: str, timeout: float) -> bool:
+    """Prove the engine really removes identifying details — do not take pip's word for it.
+
+    pip returning 0 means the wheels landed. It says nothing about an NER model that failed to
+    download, a half-built venv, or a native extension the OS refuses to load. Redacting one
+    Hebrew sentence exercises the import, the model load and the recognisers in one go, and is
+    the only evidence worth writing a "this environment is ready" marker on.
+    """
+    log(f"Verifying {label} on a Hebrew sample…", "step")
+    ok, reason, texts = _run_engine(py, runner, {"texts": [sample]}, timeout)
+    if not ok:
+        log(f"{label} does not work: {reason}", "err")
+        return False
+    if not texts or texts[0] == sample:
+        log(f"{label} ran but removed nothing — its model or recognisers are probably missing.", "err")
+        log(f"    in:  {sample}", "info")
+        log(f"    out: {texts[0] if texts else '(no output)'}", "info")
+        return False
+    log(f"{label} verified — {texts[0]}", "ok")
+    return True
+
+
+def probe_engine(py: Path, runner: Path, label: str) -> bool:
+    """Cheap import check for an environment that is already marked as installed.
+
+    A marker records that the engine worked when it was built; it cannot record that the engine
+    still works. An environment can be killed later without anyone touching it — a Windows
+    Application Control policy refusing a DLL did exactly that here, and the stale marker meant
+    every later run reported "already installed" while nothing could be redacted.
+    """
+    if not py.exists():
+        log(f"{label}: interpreter missing ({py}).", "warn")
+        return False
+    try:
+        proc = subprocess.run(
+            [str(py), str(runner), "--probe"],
+            input="", capture_output=True, text=True, encoding="utf-8", timeout=PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"{label}: could not be checked ({exc}).", "warn")
+        return False
+    if proc.returncode == 0:
+        return True
+    lines = [ln for ln in (proc.stderr or "").splitlines() if ln.strip()]
+    log(f"{label} is installed but no longer loads: "
+        f"{lines[-1].strip()[:300] if lines else f'exit code {proc.returncode}'}", "err")
+    return False
+
+
 def _find_pii_base_python(explicit: str | None) -> tuple[list[str] | None, str | None]:
     """Finds Python 3.8–3.10 (required for spaCy 3.2 of HebSafeHarbor). Returns (cmd, version)."""
     candidates: list[list[str]] = []
@@ -127,11 +225,17 @@ def ensure_pii_venv(reinstall: bool = False, pii_python: str | None = None) -> N
     if not req.exists():
         log("requirements-pii.txt is missing — skipping creation of the PII environment.", "warn")
         return
+    py = venv_python(PII_VENV)
     if PII_MARKER.exists() and not reinstall:
-        log("The PII environment (.venv-pii) is already installed — skipping.", "ok")
+        if probe_engine(py, PII_RUNNER, "HebSafeHarbor"):
+            log("The PII environment (.venv-pii) is already installed — skipping.", "ok")
+            return
+        # Deliberately neither rebuilt nor silenced: the usual cause is external (a blocked DLL,
+        # a moved interpreter) and a multi-gigabyte reinstall would not fix it. Warn on every
+        # run until someone deals with it — the point is that this stops going unnoticed.
+        log("PII removal is NOT working. Summaries will be refused (fail-closed) until it is fixed.", "err")
+        log("If you believe the environment is merely corrupt, rebuild it with --reinstall.", "info")
         return
-
-    py = PII_VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     if not py.exists():
         base, ver = _find_pii_base_python(pii_python)
         if not base:
@@ -144,8 +248,84 @@ def ensure_pii_venv(reinstall: bool = False, pii_python: str | None = None) -> N
     log("Installing HebSafeHarbor + Hebrew NER model (he_ner_news_trf) — large download, may take a few minutes…", "step")
     subprocess.check_call([str(py), "-m", "pip", "install", "--upgrade", "pip"])
     subprocess.check_call([str(py), "-m", "pip", "install", "-r", str(req)])
+
+    if not verify_engine(py, PII_RUNNER, "HebSafeHarbor", PII_SAMPLE_HEB, VERIFY_TIMEOUT_HEB):
+        PII_MARKER.unlink(missing_ok=True)
+        log("The PII environment was installed but does not redact — not marking it ready.", "err")
+        return
     PII_MARKER.write_text("ok", encoding="utf-8")
     log("The PII environment is ready.", "ok")
+
+
+def _find_presidio_base_python(explicit: str | None) -> tuple[list[str] | None, str | None]:
+    """Finds Python 3.10–3.14 (supported by the current Presidio release). Returns (cmd, version).
+
+    Prefers the application's own .venv interpreter (same base Python, no extra install needed).
+    """
+    candidates: list[list[str]] = []
+    if explicit:
+        candidates.append([explicit])
+    app_py = venv_python()
+    if app_py.exists():
+        candidates.append([str(app_py)])
+    candidates.append([sys.executable])
+    for v in ("3.13", "3.12", "3.11", "3.10", "3.14"):
+        candidates.append(["py", f"-{v}"])      # py launcher (Windows)
+        candidates.append([f"python{v}"])       # explicit name (Linux/macOS)
+    candidates.append(["python3"])
+    probe = "import sys;print('%d.%d'%sys.version_info[:2])"
+    for cmd in candidates:
+        try:
+            out = subprocess.run(cmd + ["-c", probe], capture_output=True, text=True, timeout=15)
+        except Exception:
+            continue
+        if out.returncode != 0:
+            continue
+        try:
+            major, minor = map(int, out.stdout.strip().split("."))
+        except ValueError:
+            continue
+        if major == 3 and 10 <= minor <= 14:
+            return cmd, f"{major}.{minor}"
+    return None, None
+
+
+def ensure_presidio_venv(reinstall: bool = False, presidio_python: str | None = None) -> None:
+    """Creates the isolated environment for the second PII engine, Presidio (.venv-presidio).
+
+    The worker chains it after HebSafeHarbor (app/presidio_runner.py as a subprocess). Pure pip
+    install, no model download — works air-gapped once the wheels are cached.
+    """
+    req = ROOT / "requirements-presidio.txt"
+    if not req.exists():
+        log("requirements-presidio.txt is missing — skipping creation of the Presidio environment.", "warn")
+        return
+    py = venv_python(PRESIDIO_VENV)
+    if PRESIDIO_MARKER.exists() and not reinstall:
+        if probe_engine(py, PRESIDIO_RUNNER, "Presidio"):
+            log("The Presidio environment (.venv-presidio) is already installed — skipping.", "ok")
+            return
+        log("The second PII engine is NOT working. PII removal fails closed while it is enabled.", "err")
+        log("Rebuild with --reinstall, or set PUAH_PII_PRESIDIO_ENABLED=false to run on HebSafeHarbor alone.", "info")
+        return
+    if not py.exists():
+        base, ver = _find_presidio_base_python(presidio_python)
+        if not base:
+            log("Python 3.10–3.14 not found — the Presidio PII engine will be skipped (or: --presidio-python <path>).", "warn")
+            return
+        log(f"Building the Presidio environment (.venv-presidio) with Python {ver}…", "step")
+        subprocess.check_call(base + ["-m", "venv", str(PRESIDIO_VENV)])
+
+    log("Installing Presidio (analyzer + anonymizer)…", "step")
+    subprocess.check_call([str(py), "-m", "pip", "install", "--upgrade", "pip"])
+    subprocess.check_call([str(py), "-m", "pip", "install", "-r", str(req)])
+
+    if not verify_engine(py, PRESIDIO_RUNNER, "Presidio", PII_SAMPLE_PRESIDIO, VERIFY_TIMEOUT_PRESIDIO):
+        PRESIDIO_MARKER.unlink(missing_ok=True)
+        log("Presidio was installed but does not redact — not marking it ready.", "err")
+        return
+    PRESIDIO_MARKER.write_text("ok", encoding="utf-8")
+    log("The Presidio environment is ready.", "ok")
 
 
 # ---------- קובץ הגדרות ----------
@@ -307,12 +487,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cuda-index", default=CUDA_INDEX, help="index-url of torch for CUDA (default cu128)")
     p.add_argument("--skip-pii", action="store_true", help="skip creation of the PII environment (.venv-pii)")
     p.add_argument("--pii-python", default=None, help="path to Python 3.8–3.10 for building .venv-pii")
+    p.add_argument("--skip-presidio", action="store_true", help="skip creation of the Presidio PII environment (.venv-presidio)")
+    p.add_argument("--presidio-python", default=None, help="path to Python 3.10–3.14 for building .venv-presidio")
     p.add_argument("--no-venv", action="store_true", help="use the current Python instead of creating a venv")
     p.add_argument("--no-browser", action="store_true", help="don't open the browser automatically")
     p.add_argument(
         "--install-only",
         action="store_true",
-        help="installation only (venv + dependencies + .venv-pii) and exit — for use with the server's startup script",
+        help="installation only (venv + dependencies + .venv-pii + .venv-presidio) and exit — for use with the server's startup script",
     )
     p.add_argument(
         "--offline",
@@ -355,6 +537,15 @@ def main() -> int:
             ensure_pii_venv(reinstall=args.reinstall, pii_python=args.pii_python)
         except subprocess.CalledProcessError as exc:
             log(f"Creation of the PII environment failed (code {exc.returncode}) — PII removal will be skipped. You can create it manually later.", "warn")
+
+    # Second PII engine — Presidio (best-effort as well)
+    if args.skip_presidio or args.offline:
+        log("Skipping creation of the Presidio environment.", "info")
+    else:
+        try:
+            ensure_presidio_venv(reinstall=args.reinstall, presidio_python=args.presidio_python)
+        except subprocess.CalledProcessError as exc:
+            log(f"Creation of the Presidio environment failed (code {exc.returncode}) — PII removal will fail until it exists (or set PUAH_PII_PRESIDIO_ENABLED=false).", "warn")
 
     if args.install_only:
         log("Installation completed (--install-only) — not launching the servers.", "ok")

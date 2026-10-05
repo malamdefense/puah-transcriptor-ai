@@ -1,0 +1,17 @@
+# Second PII engine — Presidio (https://github.com/data-privacy-stack/presidio), current release.
+# Installed in its *own* isolated virtual environment (.venv-presidio) because:
+#   • the current Presidio needs numpy<2.5 / spaCy>=3.4 — the application's .venv has numpy 2.5
+#     and CUDA torch, which must not be downgraded;
+#   • HebSafeHarbor (.venv-pii) pins presidio-analyzer==2.2.31 (spaCy 3.2 / pydantic v1).
+# The worker chains it *after* HebSafeHarbor via app/presidio_runner.py (subprocess, JSON stdin/stdout).
+#
+# Manual installation (any Python 3.10–3.14):
+#   python -m venv .venv-presidio
+#   .venv-presidio\Scripts\python -m pip install -r requirements-presidio.txt
+# (or simply: python rebuild.py — installs it automatically)
+#
+# No model download is needed: the runner uses a blank Hebrew spaCy tokenizer, so the
+# environment works air-gapped once the wheels are available.
+
+presidio-analyzer>=2.2.360,<3
+presidio-anonymizer>=2.2.360,<3

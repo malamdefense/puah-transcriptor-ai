@@ -109,11 +109,13 @@ def pii_egress_status(settings: Settings) -> dict[str, Any]:
     Summary/feedback content goes to Gemini (after local PII enforcement — see llm_providers.BaseLLMProvider).
     Transcription and speaker diarization (Whisper/pyannote) remain local.
     """
-    from .pipeline.pii import pii_available
+    from .pipeline.pii import pii_available, pii_engines
 
     return {
         "no_cloud_egress": False,
         "pii_engine_local": pii_available(settings),
+        # Per-engine availability: HebSafeHarbor (Hebrew NER) + Presidio (checksum/pattern recognizers)
+        "pii_engines": pii_engines(settings),
         "offline_capable": False,
         "note": (
             f"ספק LLM: Gemini ({settings.gemini_model}) — הספק המקומי הוסר. תוכן הסיכום/המשוב "

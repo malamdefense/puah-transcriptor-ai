@@ -38,13 +38,21 @@ STOPWORDS: frozenset[str] = frozenset("""
 כאילו כזה כזאת כאלה ואז אוקיי אוקי אה אהה אמ אמם נגיד כבר שזה שזאת יודע יודעת
 יודעים רואה רואים אותי אותך אצלי אצלך אצלה עדיין בכלל לגמרי אפילו בעצמי הזה
 הזאת האלה שלך שם כן לך לכם אנחנו הייתי היית היינו תהיי אהיה נראית עשית עשיתי
+כמה אמרו זמן כרגע שיש בדרך כלל הבנתי דרך עושים התחיל התחילה ימים בסוף בהתחלה ביום
+אחר אחרת אחרים לגבי כלומר מבחינת פעמים אמרתם אמרת שאמרו שאמרה עשו עשתה
 """.split())
 
 # Latin-script filler that shows up in mixed Hebrew/English speech transcripts.
 _EN_STOPWORDS: frozenset[str] = frozenset(
     "the you and that this for are was but not with have she her him his they them "
-    "what when okay yeah your our can will just like about there here from".split()
+    "what when okay yeah your our can will just like about there here from would don "
+    "how done answer general has had did does been being their then than also some any "
+    "all more most other into over only very because which who why where while should "
+    "could might must may now out yes its let me my mine we us he isn didn doesn "
+    "know mean thing things say said get got going want really sure right well".split()
 )
+# Redaction tags (<שם_>, <קשר_> …) carry no topic; their inner word must not become a keyword.
+_TAG_RE = re.compile(r"<[^<>\s]+>")
 
 # Curated domain lexicon: topic label -> trigger terms (substring match after
 # prefix-stripping). A topic is reported when at least MIN_TOPIC_HITS distinct
@@ -66,9 +74,12 @@ TOPIC_LEXICON: dict[str, tuple[str, ...]] = {
         "גנטי", "גנטית", "גנטיקה", "אקסום", "שבב", "נשאות", "נשא", "כרומוזום",
         "תסמונת", "סקר", "מוטציה",
     ),
+    # Brand names in the canonical spelling pipeline/asr_terms.py writes. Not here: names with an
+    # apostrophe (נורג'סטון, ג'יידס), which _WORD_RE splits into fragments, and brands that are
+    # also first names (יסמין, דיאנה).
     "אמצעי מניעה": (
         "גלולה", "גלולות", "התקן", "מירנה", "סרזט", "מניעה", "הורמונלי", "הורמונים",
-        "מדבקה", "מדבקות",
+        "מדבקה", "מדבקות", "קיילינה", "נורידיי", "הרמונט",
     ),
     "אובדן היריון": ("הפלה", "נפל", "דימום", "דימומים", "ריק", "שק"),
     "הפניה רפואית": ("רופא", "רופאה", "מרשם", "קופה", "מכבי", "כללית", "חולים", "מרפאה"),
@@ -110,7 +121,20 @@ def _tokens(text: str) -> list[str]:
 
 
 def transcript_text(result: dict[str, Any]) -> str:
-    return " ".join(seg.get("text", "") for seg in result.get("segments", []))
+    """The text keywords and topics are drawn from — never including an identifier.
+
+    Keywords are aggregated across every recording on the dashboard, so a name repeated in one
+    call would otherwise become a "common keyword". Callers pass the de-identified copy when
+    there is one; for a raw transcript the conversation-level pass runs here as a floor
+    (one-word answers, introductions, dictated numbers). Redaction tags are dropped either way.
+    """
+    segments = result.get("segments", [])
+    texts = [seg.get("text", "") or "" for seg in segments]
+    if not result.get("pii_deidentified"):
+        from .pii_context import contextual_redact  # local import: keywords stays importable alone
+
+        texts, _, _ = contextual_redact(texts, [seg.get("speaker", "") for seg in segments])
+    return _TAG_RE.sub(" ", " ".join(texts))
 
 
 def extract_keywords(text: str, top_k: int = 12) -> list[str]:
@@ -124,6 +148,32 @@ def extract_keywords(text: str, top_k: int = 12) -> list[str]:
     return [w for w, _ in ranked[:top_k]]
 
 
+_SUFFIXES = ("יות", "ים", "ות", "ית", "ה", "ת", "י")
+
+
+_FINAL_FORMS = str.maketrans("םןץףך", "מנצפכ")
+
+
+def _root(trigger: str) -> str:
+    """The concept a trigger stands for: "רופאה"/"רופא" -> "רופא", "דימומים"/"דימום" -> "דימומ".
+    Final letters are normalised, or "דימום" and "דימומ(ים)" would count as two concepts."""
+    for s in _SUFFIXES:
+        if trigger.endswith(s) and len(trigger) - len(s) >= 2:
+            trigger = trigger[: -len(s)]
+            break
+    return trigger.translate(_FINAL_FORMS)
+
+
+def _matches(word: str, trigger: str) -> bool:
+    for cut in (0, 1, 2):
+        if cut and not all(c in _PREFIXES for c in word[:cut]):
+            break
+        stem = word[cut:]
+        if stem == trigger or (stem.startswith(trigger) and stem[len(trigger):] in _SUFFIXES):
+            return True
+    return False
+
+
 def extract_topics(text: str) -> list[str]:
     """Match the transcript against the curated domain lexicon.
 
@@ -133,10 +183,11 @@ def extract_topics(text: str) -> list[str]:
     words = set(_tokens(text))
     scored: list[tuple[int, str]] = []
     for topic, triggers in TOPIC_LEXICON.items():
-        # Count distinct *words* that matched, not distinct triggers: several triggers
-        # of the same topic often share a stem ("רופא"/"רופאה"), so counting triggers
-        # let a single mention satisfy the threshold on its own.
-        matched = {w for w in words if any(t in w for t in triggers)}
+        # A trigger matches a whole word (prefix letters and an inflection allowed), never a
+        # substring: "שק" must not fire on "שקט", nor "מוך" on "נמוך", nor "הפסק" on "הפסקתי".
+        # Distinct *concepts* are counted, so "דימום"/"דימומים"/"הדימום" is one mention, not three —
+        # otherwise one word put a sensitive label like "אובדן היריון" on a contraception call.
+        matched = {_root(t) for w in words for t in triggers if _matches(w, t)}
         if len(matched) >= MIN_TOPIC_HITS:
             scored.append((len(matched), topic))
     scored.sort(key=lambda ht: (-ht[0], ht[1]))

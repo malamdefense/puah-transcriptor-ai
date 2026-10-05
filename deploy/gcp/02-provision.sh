@@ -139,12 +139,12 @@ fi
 sed -i "s|^PUAH_EMBED_MODEL=.*|PUAH_EMBED_MODEL=${EMBED_MODEL}|" .env
 ok "טוקן HF מוגדר (${#HF_TOKEN} תווים)"
 
-# ---------- שלב 5: תלויות Python (.venv + .venv-pii) ----------
+# ---------- שלב 5: תלויות Python (.venv + .venv-pii + .venv-presidio) ----------
 say "שלב 5/9 — תלויות Python (10–15 דק' בפעם הראשונה)"
 PII_ARGS=(); [[ "$SETUP_PII" == "1" ]] || PII_ARGS+=(--skip-pii)
 python3 rebuild.py --install-only "${PII_ARGS[@]}"
 [[ -x "$VENV_PY" ]] || die ".venv לא נוצר כראוי"
-ok "תלויות מותקנות ($([[ -d "$PROJECT_DIR/.venv-pii" ]] && echo 'כולל .venv-pii ל-PII' || echo 'ללא PII'))"
+ok "תלויות מותקנות ($([[ -d "$PROJECT_DIR/.venv-pii" ]] && echo 'כולל .venv-pii ל-PII' || echo 'ללא PII')$([[ -d "$PROJECT_DIR/.venv-presidio" ]] && echo ', כולל .venv-presidio' || echo ', ללא Presidio'))"
 
 # ---------- שלב 6: אימות ש-torch רואה את ה-GPU ----------
 say "שלב 6/9 — אימות torch↔GPU"
