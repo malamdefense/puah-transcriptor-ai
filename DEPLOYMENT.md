@@ -36,7 +36,7 @@
 **חומרה:**
 - **GPU של NVIDIA** עם ≥12GB VRAM (מומלץ 16GB+; מריצים במקביל Whisper, pyannote ומודל 12B).
   לכרטיסי **Blackwell** (RTX PRO / RTX 50xx) נדרש **CUDA 12.8** (חבילות `cu128`).
-- 16GB+ RAM, ו-50GB+ דיסק פנוי (מודלים ~15GB + הקלטות + תמלולים).
+- 16GB+ RAM (מומלץ 32GB+ לייצור שוטף עם שירותי PII מתמידים `--serve`; ה-API משחרר אוטומטית את עותק ה-PII שלו לאחר 180 שניות חוסר פעילות), ו-50GB+ דיסק פנוי (מודלים ~15GB + הקלטות + תמלולים).
 - דיסק מוצפן מומלץ (התוכן רגיש).
 
 **מערכת הפעלה:** Windows Server 2019+/Windows 11, או Linux (Ubuntu 22.04+). שניהם נתמכים.
@@ -174,14 +174,14 @@ rsync -a data/results data/uploads /backup/puah-data/
 - **לוגים:** `journalctl -u puah-worker -f` (Linux) / לוגי NSSM (Windows). שלבי העיבוד נרשמים שם.
 - **דיסק:** `uploads/` ו-`results/` והמטמון (`~/.cache/huggingface`, `~/.ollama`) גדלים. נטרו,
   ושקלו מדיניות מחיקה/ארכוב של הקלטות ישנות.
-- **Ollama:** ודאו שפועל לפני שמצפים לסיכום (`curl localhost:11434/api/tags`). אם סיכום חוזר ריק — זו הבדיקה הראשונה.
+- **סיכום ו-Ollama:** בייצור הסיכום מופק ב-Gemini (`PUHA_GEMINI_API_KEY`); בדקו ב-`GET /api/llm/status` שמנוע הסיכום ומנועי ה-PII זמינים. Ollama נדרש ל-`bge-m3` embeddings (או ל-LLM מקומי כשמוגדר `PUAH_LLM_PROVIDER=ollama`, ובמקרה זה ודאו `curl localhost:11434/api/tags`).
 - **עדכון גרסה:**
   ```bash
   # עדכנו את הקוד, ואז:
   python rebuild.py --reinstall   # רק אם requirements השתנו; אחרת רק הפעילו מחדש את השירותים
   sudo systemctl restart puah-worker puah-api
   ```
-- **בריאות:** `GET /api/health` (סטטוס + מודלים) · `GET /api/llm/status` (זמינות Ollama).
+- **בריאות:** `GET /api/health` (סטטוס + מודלים) · `GET /api/llm/status` (זמינות מנוע הסיכום ומנועי ה-PII).
 
 ---
 
@@ -213,9 +213,11 @@ docker compose run --rm worker python scripts/eval_rag.py --only-gt
 
 ### 11.0 לפני הכול — פרטיות ותאימות
 
-הארכיטקטורה נשארת **self-hosted**: Whisper, pyannote, Ollama, HebSafeHarbor ו-Presidio רצים כולם על ה-VM
-שלכם. **שום נתון אינו נשלח ל-API של צד שלישי** (לא Google AI, לא OpenAI). מה שמשתנה: התוכן יושב
-פיזית על תשתית Google. לתוכן רפואי/הלכתי רגיש — הקפידו על:
+רכיבי התמלול והסרת הפרטים המזהים נשארים **self-hosted** על ה-VM שלכם: Whisper, pyannote,
+HebSafeHarbor, Presidio, Ollama (`bge-m3`) ו-RAG החוברת ב-SQLite רצים כולם מקומית. ההקלטות הגולמיות
+לעולם אינן עוזבות את השרת; **רק הטקסט לאחר הסרת פרטים מזהים מקומית** (בשני המנועים + בדיקת הקשר;
+שמות וארגונים מועברים כתגיות ממוספרות בלבד ומשוחזרים מקומית) נשלח ל-Google Gemini להפקת הסיכום
+והמשוב. מה שמשתנה: התוכן השמור יושב פיזית על תשתית Google. לתוכן רפואי/הלכתי רגיש — הקפידו על:
 
 - **אזור `me-west1` (תל אביב)** → data residency בישראל.
 - **ללא IP ציבורי** (`--no-address`) + גישה דרך IAP בלבד (מוגדר למטה).
@@ -276,10 +278,12 @@ gcloud compute firewall-rules create puah-allow-lb --network=puah-vpc \
     --source-ranges=130.211.0.0/22,35.191.0.0/16 --target-tags=puah-app
 ```
 
-### 11.3 טוקן HuggingFace ב-Secret Manager
+### 11.3 טוקן HuggingFace ומפתח Gemini ב-Secret Manager
 
 ```bash
 printf '%s' 'hf_XXXXXXXXXXXX' | gcloud secrets create puah-hf-token --data-file=-
+# אופציונלי (מומלץ לייצור — במקום להזין ידנית ב-⚙ בממשק):
+printf '%s' 'AIzaSyXXXXXXXXX' | gcloud secrets create puah-gemini-key --data-file=-
 ```
 
 ### 11.4 העלאת הקוד ל-GCS
@@ -287,15 +291,17 @@ printf '%s' 'hf_XXXXXXXXXXXX' | gcloud secrets create puah-hf-token --data-file=
 ```bash
 gcloud storage buckets create "gs://${BUCKET}" --location="$REGION" --uniform-bucket-level-access
 
-# מתיקיית הפרויקט (ללא venvs ו-data):
+# מתיקיית הפרויקט (ללא .env המקומי, venvs, data, cache וקבצי פיתוח):
 gcloud storage rsync -r . "gs://${BUCKET}/puah" \
-    --exclude='^(\.venv|\.venv-pii|\.venv-presidio|data|\.git|__pycache__)/.*$'
+    --exclude='^((\.env|pyvenv\.cfg)$|(\.venv.*|venv|data|\.git|\.claude|\.pytest_cache|bin|include|lib|lib64|media)(/.*)?$|.*(^|/)__pycache__(/.*)?$|.*\.py[cod]$|.*\.(mp3|mp4|wav|m4a|docx|xlsx|png)$)'
 ```
+> **חשוב:** קובץ `.env` המקומי חייב להיות מוחרג מהסנכרון — גם כדי שלא יועלו מפתחות פרטיים לבאקט, וגם
+> כדי שלא יועתק `PUAH_LLM_PROVIDER=ollama` מסביבת הפיתוח ל-GCP (ששם הסיכום רץ ב-Gemini).
 
 ### 11.5 יצירת ה-VM עם GPU
 
 ה-startup-script ([`deploy/gcp/startup.sh`](deploy/gcp/startup.sh)) מתקין הכול לבד: דרייברי NVIDIA,
-ffmpeg, Ollama, את האפליקציה, את שלושת ה-venv (כולל `.venv-pii` ו-`.venv-presidio`), מושך את המודלים, ומרים את השירותים.
+ffmpeg, Ollama, את האפליקציה, את שלושת ה-venv (כולל `.venv-pii` ו-`.venv-presidio`), מושך את `bge-m3`, ומרים את השירותים.
 
 ```bash
 gcloud compute instances create "$VM" --zone="$ZONE" \
@@ -307,9 +313,10 @@ gcloud compute instances create "$VM" --zone="$ZONE" \
     --service-account="$SA_EMAIL" --scopes=cloud-platform \
     --tags=puah-app \
     --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
-    --metadata=app-bucket="${BUCKET}",hf-secret=puah-hf-token \
+    --metadata=app-bucket="${BUCKET}",hf-secret=puah-hf-token,gemini-secret=puah-gemini-key \
     --metadata-from-file=startup-script=deploy/gcp/startup.sh
 ```
+*(אם אינכם מגדירים `puah-gemini-key` ב-Secret Manager, השמיטו את `gemini-secret=...` והזינו את המפתח דרך מסך ההגדרות `⚙` בממשק לאחר העלייה.)*
 
 > **`g2-standard-8` כולל אוטומטית GPU אחד מסוג NVIDIA L4 (24GB VRAM)** — אין צורך ב-`--accelerator`.
 > 24GB מספיקים ל-Whisper + pyannote *יחד* (מודל השפה רץ בענן). `--maintenance-policy=TERMINATE` הוא חובה ב-GPU.
@@ -384,8 +391,9 @@ gcloud compute resource-policies create snapshot-schedule puah-daily \
     --daily-schedule --storage-location="$REGION"
 gcloud compute disks add-resource-policies "$VM" --zone="$ZONE" --resource-policies=puah-daily
 
-# עדכון גרסה: סנכרון הקוד ואז ריענון על ה-VM
-gcloud storage rsync -r . "gs://${BUCKET}/puah" --exclude='^(\.venv|\.venv-pii|\.venv-presidio|data|\.git|__pycache__)/.*$'
+# עדכון גרסה: סנכרון הקוד (ללא .env, venvs, data וקבצי פיתוח) ואז ריענון על ה-VM
+gcloud storage rsync -r . "gs://${BUCKET}/puah" \
+    --exclude='^((\.env|pyvenv\.cfg)$|(\.venv.*|venv|data|\.git|\.claude|\.pytest_cache|bin|include|lib|lib64|media)(/.*)?$|.*(^|/)__pycache__(/.*)?$|.*\.py[cod]$|.*\.(mp3|mp4|wav|m4a|docx|xlsx|png)$)'
 gcloud compute ssh "$VM" --zone="$ZONE" --tunnel-through-iap --command \
   'sudo gcloud storage rsync -r gs://'"$BUCKET"'/puah /opt/puah && sudo systemctl restart puah-worker puah-api'
 

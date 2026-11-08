@@ -19,3 +19,38 @@ venv/
 Thumbs.db
 .idea/
 .vscode/
+
+# הקלטות שיחה אמיתיות ואודיו/וידאו — לעולם לא בגיט
+פרויקט AI סיכומים ומשוב יעוץ/
+*.mp3
+*.mp4
+*.m4a
+*.wav
+*.ogg
+*.opus
+*.amr
+*.flac
+*.aac
+*.wma
+
+# מסמכים וגיליונות עסקיים (נתוני משוב, הצעות מחיר, ניתוחי שיחות, חוברת, פרומפטים)
+*.xlsx
+*.xls
+*.docx
+*.doc
+~$*
+
+# סביבה וירטואלית מיותרת בשורש הפרויקט
+bin/
+lib/
+lib64/
+include/
+
+# הגדרות מקומיות של Claude Code
+.claude/
+.claude/settings.local.json
+.claude/worktrees/
+
+tests/
+diagram.png
+diar_level.py

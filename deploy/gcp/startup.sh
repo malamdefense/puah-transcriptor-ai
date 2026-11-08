@@ -3,9 +3,10 @@
 # מתקין: דרייברי NVIDIA, ffmpeg, Ollama, את האפליקציה, ואת השירותים.
 #
 # מטא-דאטה שהסקריפט קורא (מוגדרת ב-gcloud compute instances create):
-#   app-bucket   — באקט GCS שממנו נמשך קוד האפליקציה   (חובה)
-#   hf-secret    — שם הסוד ב-Secret Manager עם טוקן ה-HF (חובה)
-#   embed-model  — מודל ה-embedding (ברירת מחדל bge-m3)
+#   app-bucket    — באקט GCS שממנו נמשך קוד האפליקציה      (חובה)
+#   hf-secret     — שם הסוד ב-Secret Manager עם טוקן ה-HF    (חובה)
+#   gemini-secret — שם הסוד ב-Secret Manager עם מפתח Gemini  (אופציונלי; ניתן להזין גם ב-⚙ בממשק)
+#   embed-model   — מודל ה-embedding (ברירת מחדל bge-m3)
 #
 # לוגים:  sudo journalctl -u google-startup-scripts -f
 
@@ -19,6 +20,7 @@ meta() { curl -fsS -H "Metadata-Flavor: Google" \
 
 APP_BUCKET="$(meta app-bucket)"
 HF_SECRET="$(meta hf-secret)"
+GEMINI_SECRET="$(meta gemini-secret)"
 EMBED_MODEL="$(meta embed-model bge-m3)"
 [ -n "$APP_BUCKET" ] || { echo "חסר metadata app-bucket"; exit 1; }
 
@@ -60,14 +62,64 @@ mkdir -p "$APP_DIR"
 gcloud storage rsync -r "gs://${APP_BUCKET}/puah" "$APP_DIR" --delete-unmatched-destination-objects
 chown -R puah:puah "$APP_DIR"
 
-# ---------- 5. קובץ .env (טוקן HF מ-Secret Manager) ----------
+# ---------- 5. קובץ .env (טוקן HF ומפתח Gemini אופציונלי מ-Secret Manager) ----------
 if [ ! -f "$APP_DIR/.env" ]; then
   cp "$APP_DIR/.env.example" "$APP_DIR/.env"
 fi
-HF_TOKEN="$(gcloud secrets versions access latest --secret="$HF_SECRET")"
-sed -i "s|^PUAH_HF_TOKEN=.*|PUAH_HF_TOKEN=${HF_TOKEN}|"        "$APP_DIR/.env"
-sed -i "s|^PUAH_EMBED_MODEL=.*|PUAH_EMBED_MODEL=${EMBED_MODEL}|" "$APP_DIR/.env"
+HF_TOKEN="$(gcloud secrets versions access latest --secret="$HF_SECRET" | tr -d '\r\n')"
+GEMINI_KEY=""
+if [ -n "$GEMINI_SECRET" ]; then
+  GEMINI_KEY="$(gcloud secrets versions access latest --secret="$GEMINI_SECRET" 2>/dev/null | tr -d '\r\n' || true)"
+  [ -n "$GEMINI_KEY" ] || echo "⚠ gemini-secret='${GEMINI_SECRET}' לא נקרא מ-Secret Manager — ניתן להזין PUHA_GEMINI_API_KEY ב-.env או ב-⚙ בממשק."
+fi
+
+python3 - "$APP_DIR/.env" "$HF_TOKEN" "$EMBED_MODEL" "$GEMINI_KEY" <<'PY'
+import pathlib, sys
+
+env_path = pathlib.Path(sys.argv[1])
+hf_token, embed_model, gemini_key = sys.argv[2], sys.argv[3], sys.argv[4]
+lines = env_path.read_text(encoding="utf-8").splitlines()
+updates = {
+    "PUAH_HF_TOKEN": hf_token,
+    "PUAH_EMBED_MODEL": embed_model,
+}
+if gemini_key:
+    updates["PUHA_GEMINI_API_KEY"] = gemini_key
+
+seen = set()
+out = []
+warn_ollama = False
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("PUAH_LLM_PROVIDER=") and not stripped.startswith("#"):
+        if stripped.split("=", 1)[1].strip().lower() == "ollama":
+            warn_ollama = True
+    replaced = False
+    for k, v in updates.items():
+        if stripped.startswith(k + "="):
+            out.append(f"{k}={v}")
+            seen.add(k)
+            replaced = True
+            break
+    if not replaced:
+        out.append(line)
+
+for k, v in updates.items():
+    if k not in seen:
+        out.append(f"{k}={v}")
+
+env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+if warn_ollama:
+    print(
+        "⚠ אזהרה: בקובץ .env מוגדר PUAH_LLM_PROVIDER=ollama (כמו בפיתוח מקומי), "
+        "אך startup.sh מושך רק את מודל ה-embedding ולא מודל שפה מקומי. לשימוש ב-Gemini מחק/עדכן ל-PUAH_LLM_PROVIDER=gemini.",
+        file=sys.stderr,
+    )
+PY
 chown puah:puah "$APP_DIR/.env" && chmod 600 "$APP_DIR/.env"
+if ! grep -qE '^PUHA_GEMINI_API_KEY=.+' "$APP_DIR/.env"; then
+  echo "⚠ הערה: PUHA_GEMINI_API_KEY אינו מוגדר ב-.env (ניתן להגדיר דרך מטא-דאטה gemini-secret או במסך הגדרות ⚙ בממשק)."
+fi
 
 # ---------- 6. התקנת התלויות (venv ראשי + .venv-pii + .venv-presidio) ----------
 # Ubuntu 22.04 מגיע עם Python 3.10 — מתאים גם לאפליקציה וגם ל-HebSafeHarbor.

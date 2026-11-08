@@ -21,6 +21,7 @@ const state = {
   piiResult: null,
   piiError: null,
   piiLoading: false,
+  lowpHint: false,    // opt-in "unvalidated" low-confidence word marks (off by default)
 };
 
 const $ = (id) => document.getElementById(id);
@@ -44,6 +45,7 @@ const STAGE_HE = {
   transcribing: "מתמלל",
   diarizing: "מזהה דוברים",
   merging: "מסדר תמלול",
+  summarizing: "מפיק סיכומים",
 };
 function speakerColor(id, speakerIds) {
   const idx = speakerIds.indexOf(id);
@@ -227,6 +229,7 @@ async function selectJob(id) {
   state.currentJobId = id;
   state.result = null; // Clear previous result to allow automatic loading on the next poll
   resetPiiView();      // every recording opens on the full transcript
+  state.lowpHint = false; // ... with the unvalidated low-confidence hint off
   renderJobs();
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
@@ -318,6 +321,9 @@ function renderTranscript() {
     legend.appendChild(chip);
   }
 
+  // Recording-quality check — from the live result, so it names speakers as the legend does
+  renderAudioQuality(res);
+
   // Reset internal search and build segments (keeping the active tab)
   $("findInput").value = "";
   state.findQuery = "";
@@ -337,6 +343,8 @@ function renderSegments(query) {
   const segWrap = $("segments");
 
   if (!res) {
+    // Nothing to mark: the hint toggle goes too (PII copy loading, missing or failed)
+    updateLowpToggle(false);
     // PII tab with nothing loaded yet (or unavailable) — #piiNotice above carries the explanation
     if (pii) {
       segWrap.innerHTML = state.piiLoading ? `<div class="dash-empty">טוען…</div>` : "";
@@ -351,6 +359,12 @@ function renderSegments(query) {
   const speakerIds = Object.keys(names);
   segWrap.innerHTML = "";
 
+  // Confidence marks exist only in the full transcript (the PII copy has no words):
+  // window flags always, the low-confidence word hint only when the viewer opts in.
+  const threshold = pii ? null : lowpThreshold(res);
+  updateLowpToggle(!pii && threshold !== null);
+  const hintAt = state.lowpHint ? threshold : null;
+
   res.segments.forEach((seg, i) => {
     const div = document.createElement("div");
     div.className = "seg";
@@ -359,17 +373,103 @@ function renderSegments(query) {
     div.dataset.start = seg.start;
     div.dataset.end = seg.end;
     div.dataset.idx = i;
+    const check = !pii && segWindowFlag(seg);
     div.innerHTML = `
       <div class="seg-head">
         <span class="seg-speaker" style="color:${color}">${escapeHtml(names[seg.speaker] || seg.speaker)}</span>
         <span class="seg-time">${fmtClock(seg.start)} – ${fmtClock(seg.end)}</span>
+        ${check ? `<span class="seg-check" title="${escapeHtml(WINDOW_FLAG_TITLE[check] || WINDOW_FLAG_TITLE.gate_failed)}">לבדוק מול ההקלטה</span>` : ""}
       </div>
-      <div class="seg-text" dir="${textDir(seg.language)}">${pii ? piiHtml(seg.text, query) : highlightHtml(seg.text, query)}</div>`;
+      <div class="seg-text" dir="${textDir(seg.language)}">${pii ? piiHtml(seg.text, query) : segmentHtml(seg, query, hintAt)}</div>`;
     div.onclick = () => { const p = $("player"); p.currentTime = seg.start; p.play(); };
     segWrap.appendChild(div);
   });
 
   updateFindState();
+}
+
+// ---------- Confidence marks (ASR window flags; opt-in low-confidence hint) ----------
+// A word's decode window that failed a quality gate, or was decoded by random sampling, is
+// marked "check against the recording". Word probabilities are NOT validated against a manual
+// transcript yet, so their marks are an opt-in hint, labelled as such.
+const WINDOW_FLAG_TITLE = {
+  gate_failed: "המודל התקשה בקטע זה (פענוח שלא עבר את בדיקת האיכות) — כדאי לבדוק מול ההקלטה",
+  sampled_hi: "קטע זה פוענח בדגימה אקראית לאחר ניסיונות שנכשלו — כדאי לבדוק מול ההקלטה",
+};
+const LOWP_LABEL = "רמז: מילים בביטחון נמוך (לא מאומת)";
+const LOWP_TITLE =
+  "סימון לפי הסתברות המודל בלבד, שטרם נבדקה מול תמלול ידני: " +
+  "מילה מסומנת אינה בהכרח שגויה, ומילה שאינה מסומנת אינה בהכרח נכונה.";
+
+// The first window flag among the segment's words, or null
+function segWindowFlag(seg) {
+  for (const w of seg.words || []) if (w && w.window_flag) return String(w.window_flag);
+  return null;
+}
+
+// The display threshold, when the result says how confidence is shown and carries word probabilities
+function lowpThreshold(res) {
+  const cd = res && res.confidence_display;
+  if (!cd || typeof cd.threshold !== "number") return null;
+  const any = (res.segments || []).some((s) => (s.words || []).some((w) => w && typeof w.probability === "number"));
+  return any ? cd.threshold : null;
+}
+
+// The toggle lives in the find bar; created on first use, hidden when it does not apply (PII tab,
+// results without probabilities)
+function updateLowpToggle(show) {
+  let wrap = $("lowpToggleWrap");
+  if (!wrap) {
+    if (!show) return; // never created just to be hidden
+    const bar = document.querySelector(".findbar");
+    if (!bar) return;
+    wrap = document.createElement("label");
+    wrap.id = "lowpToggleWrap";
+    wrap.className = "lowp-toggle";
+    wrap.title = LOWP_TITLE;
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = "lowpToggle";
+    box.addEventListener("change", (e) => {
+      state.lowpHint = e.target.checked;
+      renderSegments(state.findQuery);
+    });
+    const text = document.createElement("span");
+    text.textContent = LOWP_LABEL;
+    wrap.append(box, text);
+    bar.appendChild(wrap);
+  }
+  wrap.classList.toggle("hidden", !show);
+  const box = $("lowpToggle");
+  if (box) box.checked = !!state.lowpHint;
+}
+
+// Segment text with per-word marks. Each word is escaped and find-highlighted BEFORE it is
+// wrapped, so the find highlighter never runs over tag text and the <mark> count is unchanged.
+// The word view is used only when the words spell the stored text exactly (the merge's rule);
+// otherwise the text is shown as stored.
+function segmentHtml(seg, query, hintAt) {
+  const words = Array.isArray(seg.words) ? seg.words : [];
+  const low = (w) => hintAt !== null && typeof w.probability === "number" && w.probability < hintAt;
+  if (!words.some((w) => w && (w.window_flag || low(w)))) return highlightHtml(seg.text, query);
+  if (words.map((w) => String((w && w.word) ?? "")).join(" ").trim() !== String(seg.text || "").trim()) {
+    return highlightHtml(seg.text, query);
+  }
+  return words.map((w) => {
+    const inner = highlightHtml(String(w.word ?? ""), query);
+    const cls = [];
+    const titles = [];
+    if (w.window_flag) {
+      cls.push("w-check");
+      titles.push(WINDOW_FLAG_TITLE[w.window_flag] || WINDOW_FLAG_TITLE.gate_failed);
+    }
+    if (low(w)) {
+      cls.push("w-lowp");
+      titles.push(`ביטחון המודל ${Math.round(w.probability * 100)}% — רמז לא מאומת`);
+    }
+    if (!cls.length) return inner;
+    return `<span class="${cls.join(" ")}" title="${escapeHtml(titles.join(" · "))}">${inner}</span>`;
+  }).join(" ");
 }
 
 function highlightSegment(t) {
@@ -409,16 +509,15 @@ function renderPuahOutputs(res) {
   const fb = res.feedback;
   const has = cs || fb;
 
-  let html = `<div class="puah-actions"><h3>סיכומי השיחה</h3></div>`;
+  let html = `<div class="puah-actions"><h3>סיכומי השיחה</h3>
+    <button id="regenSummaryBtn" class="btn ghost">${has ? "הפק מחדש" : "הפק סיכומים כעת"}</button></div>`;
 
-  // Produced automatically by the worker right after the transcript PII step —
-  // there is no manual trigger. An empty state here means the generation failed
-  // (e.g. missing API key or exhausted quota); the worker log has the reason.
+  // Produced automatically by the worker right after the transcript PII step;
+  // the button above also allows manual recovery if the LLM was busy or unreachable.
   if (!has) {
     html += `<div class="puah-card"><div class="sc-empty">
-      הסיכומים מופקים אוטומטית בסיום התמלול, ב-Google Gemini, לאחר הסרת פרטים
-      מזהים (PII) מקומית. אם הם אינם מופיעים — ההפקה נכשלה (למשל מפתח API חסר
-      או מכסה שנוצלה); הפרטים ביומן ה-worker.</div></div>`;
+      הסיכומים מופקים אוטומטית בסיום התמלול לאחר הסרת פרטים מזהים (PII) מקומית.
+      אם הם אינם מופיעים — ניתן ללחוץ על <b>הפק סיכומים כעת</b> למעלה, או לבדוק את יומן ה-worker.</div></div>`;
   }
   // Redaction-placeholder check of each text (server record: labels only, never text).
   // residual = tags still in the stored text (results from before the guard); sanitized = the
@@ -426,6 +525,8 @@ function renderPuahOutputs(res) {
   // sentence. Repaired by a retry, or clean: nothing to show.
   const ck = res.client_summary_check || {};
   const fk = res.feedback_check || {};
+  const cr = res.client_summary_reid || {};
+  const fr = res.feedback_reid || {};
   const csTagged = Array.isArray(ck.residual) && ck.residual.length > 0;
   const fbTagged = Array.isArray(fk.residual) && fk.residual.length > 0;
   let csNote = "";
@@ -435,24 +536,30 @@ function renderPuahOutputs(res) {
   else if (ck.sanitized)
     csNote = `<div class="pii-notice warn">תגיות הסתרה הוסרו אוטומטית מהסיכום. מומלץ לקרוא אותו לפני השליחה.
       · ${tagLabelsHtml(ck.tags_found)}</div>`;
+  const csReid = reidNoticeHtml(cr, true);
   // The feedback is internal: a muted note only.
   let fbNote = "";
   if (fbTagged) fbNote = `<div class="pii-notice">המשוב מכיל תגיות הסתרה · ${tagLabelsHtml(fk.residual)}</div>`;
   else if (fk.sanitized)
     fbNote = `<div class="pii-notice">תגיות הסתרה הוסרו אוטומטית מהמשוב · ${tagLabelsHtml(fk.tags_found)}</div>`;
+  const fbReid = reidNoticeHtml(fr, false);
 
   if (cs)
     html += `<div class="puah-card client">
       <div class="pc-head"><h3>📩 סיכום ללקוח</h3>
         <button class="btn ghost copy-btn" data-copy="cs">העתק</button></div>
-      ${csNote}<div class="puah-text">${csTagged ? piiHtml(cs, "") : escapeHtml(cs)}</div></div>`;
+      ${csNote}${csReid}<div class="puah-text">${csTagged ? piiHtml(cs, "") : escapeHtml(cs)}</div></div>`;
   if (fb)
     html += `<div class="puah-card feedback">
       <div class="pc-head"><h3>📋 משוב ליועץ (פנימי)</h3>
         <button class="btn ghost copy-btn" data-copy="fb">העתק</button></div>
-      ${fbNote}<div class="puah-text">${fbTagged ? piiHtml(fb, "") : escapeHtml(fb)}</div></div>`;
+      ${fbNote}${fbReid}<div class="puah-text">${fbTagged ? piiHtml(fb, "") : escapeHtml(fb)}</div></div>`;
 
   el.innerHTML = html;
+  const regenBtn = $("regenSummaryBtn");
+  if (regenBtn && res && res.job_id) {
+    regenBtn.addEventListener("click", () => regenerateSummaries(res.job_id));
+  }
   el.querySelectorAll(".copy-btn").forEach((b) =>
     b.addEventListener("click", () => {
       const isCs = b.dataset.copy === "cs";
@@ -466,11 +573,177 @@ function renderPuahOutputs(res) {
   );
 }
 
+async function regenerateSummaries(jobId) {
+  const btn = $("regenSummaryBtn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "מפיק סיכומים…";
+  }
+  try {
+    const r = await fetch(`${API}/jobs/${jobId}/summarize`, { method: "POST" });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.detail || `שגיאה ${r.status}`);
+    }
+    const updated = await r.json();
+    if (state.currentJobId === jobId) {
+      state.result = updated;
+      state.piiJobId = null;
+      state.piiResult = null;
+      renderTranscript();
+    }
+  } catch (err) {
+    alert(err.message || "הפקת הסיכומים נכשלה");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "הפק סיכומים כעת";
+    }
+  }
+}
+
 // Placeholder labels of a check record as tag chips (the labels themselves contain < >).
 function tagLabelsHtml(labels) {
   return (Array.isArray(labels) ? labels : [])
     .map((l) => `<span class="pii-tag">${escapeHtml(l)}</span>`)
     .join(" ");
+}
+
+// Re-identification notice: counts of restored labels only (no values).
+function reidNoticeHtml(reid, forCaller) {
+  const restored = (reid && typeof reid.restored === "object" && reid.restored) || {};
+  const entries = Object.entries(restored).filter(([, n]) => Number(n) > 0);
+  if (!entries.length) return "";
+  const chips = entries
+    .map(([label, n]) => `<span class="pii-tag">${escapeHtml(label)} ×${Number(n)}</span>`)
+    .join(" ");
+  const tail = forCaller ? " — מומלץ לוודא דיוק לפני שליחה לפונה" : "";
+  return `<div class="pii-notice">שוחזרו מקומית מהתמלול (ללא חשיפה למודל ה-AI)${tail} · ${chips}</div>`;
+}
+
+// ---------- Recording-quality check ----------
+// result.audio_quality comes from the worker: numbers and fixed Hebrew messages, never transcript
+// text. A message names its speaker as "{speaker}"; it is replaced here by the CURRENT display name
+// (the legend can rename), falling back to the speaker id. Old results have no audio_quality and
+// show nothing. The box sits above the transcript tabs and is built from state.result only, so the
+// PII tab (which swaps just the segments below it) leaves it as it is.
+const AQ_TITLE = "בדיקת איכות הקלטה";
+const AQ_CLEAN = "לא נמצאו בעיות באיכות ההקלטה.";
+const AQ_FOOTNOTE = "הבדיקה אוטומטית; ההקלטה המקורית לא שונתה.";
+const AQ_SEVERITY = {
+  severe: { rank: 0, label: "חמור" },
+  warn: { rank: 1, label: "אזהרה" },
+  info: { rank: 2, label: "לידיעה" },
+};
+const AQ_FIX_LABEL = "טופל אוטומטית";
+const AQ_ANY_SPEAKER = "אחד הדוברים";
+const AQ_SPEAKER_ID = /^SPEAKER_\d+$/;
+const _own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+// Speakers an entry is about: its `speaker` (flags), else the speaker keys of its `detail` (a
+// speaker_gain fix lists the lifted speakers there).
+function aqSpeakerIds(entry, names) {
+  if (entry.speaker) return [String(entry.speaker)];
+  const d = entry.detail;
+  if (!d || typeof d !== "object" || Array.isArray(d)) return [];
+  return Object.keys(d).filter((k) => AQ_SPEAKER_ID.test(k) || _own(names, k));
+}
+
+// The message as HTML: every piece escaped, "{speaker}" -> the bidi-isolated display name(s).
+function aqMessageHtml(entry, names) {
+  const ids = aqSpeakerIds(entry, names);
+  const who = ids.length
+    ? ids.map((id) => {
+        const name = _own(names, id) ? String(names[id] == null ? "" : names[id]).trim() : "";
+        return `<bdi>${escapeHtml(name || id)}</bdi>`;
+      }).join(", ")
+    : escapeHtml(AQ_ANY_SPEAKER);
+  return String(entry.message_he).split("{speaker}").map(escapeHtml).join(who);
+}
+
+// What the box shows: null for a result without a check (show nothing); a single muted line when
+// no flag is warn/severe and nothing was fixed (info notes, if any, folded behind it); otherwise the
+// title, the flags (most severe first), the applied fixes and the footnote.
+// Returns {className, html, title}.
+function audioQualityBox(aq, names) {
+  if (!aq || typeof aq !== "object" || Array.isArray(aq)) return null;
+  names = names && typeof names === "object" ? names : {};
+  const usable = (e) => e && typeof e === "object" && typeof e.message_he === "string" && e.message_he.trim();
+  const allFlags = (Array.isArray(aq.flags) ? aq.flags : []).filter(usable);
+  // The worker also lists every applied fix as an info flag of the same code (for a speaker_gain
+  // fix that flag names the lifted speaker, the fix itself does not). One line per fix: the twin
+  // flag is folded into it and words the fix line when it names a speaker.
+  const twins = new Set();
+  const fixes = (Array.isArray(aq.fixes) ? aq.fixes : []).filter(usable).map((fx) => {
+    const j = typeof fx.code === "string"
+      ? allFlags.findIndex((f, i) => !twins.has(i) && f.code === fx.code) : -1;
+    if (j < 0) return fx;
+    twins.add(j);
+    return allFlags[j].speaker ? allFlags[j] : fx;
+  });
+  const flags = allFlags
+    .filter((e, i) => !twins.has(i))
+    .map((e, i) => ({
+      e, i,
+      sev: typeof e.severity === "string" && _own(AQ_SEVERITY, e.severity) ? e.severity : "info",
+    }))
+    .sort((a, b) => AQ_SEVERITY[a.sev].rank - AQ_SEVERITY[b.sev].rank || a.i - b.i);
+  const worst = flags.length ? flags[0].sev : "info";
+
+  const line = (cls, label, entry) =>
+    `<li class="aq-item ${cls}"><span class="aq-sev">${escapeHtml(label)}</span>` +
+    `<span class="aq-msg">${aqMessageHtml(entry, names)}</span></li>`;
+  const items = flags
+    .map(({ e, sev }) => line(`aq-${sev}`, AQ_SEVERITY[sev].label, e))
+    .concat(fixes.map((e) => line("aq-fix", AQ_FIX_LABEL, e)))
+    .join("");
+  const foot = `<div class="aq-foot">${escapeHtml(AQ_FOOTNOTE)}</div>`;
+
+  if (worst === "info" && !fixes.length) {
+    // Nothing to warn about. Info-only notes (e.g. a narrow-band line) stay one click away.
+    if (!flags.length)
+      return {
+        className: "pii-notice aq aq-clean",
+        html: escapeHtml(AQ_CLEAN),
+        title: `${AQ_TITLE} — ${AQ_FOOTNOTE}`,
+      };
+    return {
+      className: "pii-notice aq aq-clean",
+      html: `<details><summary>${escapeHtml(AQ_CLEAN)}</summary><ul class="aq-list">${items}</ul>${foot}</details>`,
+      title: AQ_TITLE,
+    };
+  }
+
+  return {
+    className: "pii-notice aq" + (worst === "severe" ? " err" : worst === "warn" ? " warn" : ""),
+    html: `<b>${escapeHtml(AQ_TITLE)}</b><ul class="aq-list">${items}</ul>${foot}`,
+    title: "",
+  };
+}
+
+// The box element: created on first use, just above the transcript tabs.
+function audioQualityEl() {
+  let el = $("audioQuality");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "audioQuality";
+    const tabs = $("transcriptTabs");
+    if (tabs && tabs.parentNode) tabs.parentNode.insertBefore(el, tabs);
+    else $("transcriptView").appendChild(el);
+  }
+  return el;
+}
+
+function renderAudioQuality(res) {
+  const el = audioQualityEl();
+  const box = res ? audioQualityBox(res.audio_quality, res.speakers) : null;
+  // A rename re-renders the view: keep the folded info notes open if they were, on the same job
+  const keepOpen = !!(res && el.dataset.job === String(res.job_id) && el.querySelector("details[open]"));
+  el.dataset.job = res ? String(res.job_id) : "";
+  el.className = box ? box.className : "hidden";
+  el.innerHTML = box ? box.html : "";
+  if (keepOpen) { const d = el.querySelector("details"); if (d) d.open = true; }
+  if (box && box.title) el.title = box.title;
+  else el.removeAttribute("title");
 }
 
 // ---------- Tabs: full transcript / de-identified (PII) transcript ----------

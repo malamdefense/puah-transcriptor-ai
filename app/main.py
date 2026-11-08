@@ -7,14 +7,16 @@ Heavy processing is performed in the separate worker process (app/worker.py).
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from urllib.parse import quote
 
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, prompts_store, secrets_store
@@ -32,16 +34,18 @@ from .db import (
     save_result,
     search_segments,
 )
+from .pipeline import reidentify
 from .pipeline.export import EXPORTERS
-from .pipeline.export_docx import build_docx_bytes
+from .pipeline.export_docx import WordExportUnavailable, build_docx_bytes
 from .pipeline.keywords import build_summary as build_local_summary
 from .pipeline.output_guard import legacy_check, sanitize_caller_text
-from .pipeline.pii import PIIError, deidentify_result, pii_download_name, pii_title
+from .pipeline.pii import PIIError, deidentify_result, pii_download_name, pii_title, set_pii_daemon_idle_timeout
 from .pipeline.summarize import (
     LLMError,
     check_available,
     generate_client_summary,
     generate_feedback,
+    store_deliverable,
 )
 from .schemas import (
     JobSummary,
@@ -53,6 +57,42 @@ from .schemas import (
 
 settings = get_settings()
 log = logging.getLogger(__name__)
+
+
+def _silence_windows_proactor_reset() -> None:
+    """Work around CPython 3.10 Windows ProactorEventLoop bug (bpo-39010 / gh-83193).
+
+    When the browser cancels an audio/video Range request or closes a tab, the remote socket is
+    already reset (WinError 10054). In Python 3.10, `_ProactorBasePipeTransport._call_connection_lost`
+    calls `self._sock.shutdown(socket.SHUT_RDWR)` inside `finally:` without catching `OSError`,
+    raising noisy `ConnectionResetError` tracebacks and skipping `self._sock.close()`.
+    """
+    if os.name != "nt":
+        return
+    try:
+        from asyncio.proactor_events import _ProactorBasePipeTransport  # type: ignore[attr-defined]
+    except ImportError:
+        return
+    orig = getattr(_ProactorBasePipeTransport, "_call_connection_lost", None)
+    if orig is None or getattr(orig, "_puah_patched", False):
+        return
+
+    def _safe_call_connection_lost(self, exc):  # type: ignore[no-untyped-def]
+        try:
+            orig(self, exc)
+        except (ConnectionResetError, OSError):
+            try:
+                if getattr(self, "_sock", None) is not None:
+                    self._sock.close()
+                    self._sock = None
+            except OSError:
+                pass
+
+    _safe_call_connection_lost._puah_patched = True  # type: ignore[attr-defined]
+    _ProactorBasePipeTransport._call_connection_lost = _safe_call_connection_lost  # type: ignore[method-assign]
+
+
+_silence_windows_proactor_reset()
 
 app = FastAPI(title="Puah Transcription System", version=__version__)
 app.add_middleware(
@@ -67,18 +107,22 @@ ALLOWED_EXT = {".mp4", ".m4a", ".mov", ".mkv", ".webm", ".mp3", ".wav", ".aac", 
 
 # Create the index on startup (idempotent) — not dependent on the lifespan event
 init_db()
+# Auto-close secondary PII daemons spawned by manual summary regeneration after inactivity
+# so the API process stays lightweight and frees ~1-2 GB RAM on smaller GCP/local hosts.
+set_pii_daemon_idle_timeout(settings.pii_api_idle_timeout_sec)
 
 
 # ---------- API ----------
 
 @app.get("/api/health")
 def health() -> dict:
+    is_ollama = getattr(settings, "llm_provider", "gemini") == "ollama"
     return {
         "status": "ok",
         "version": __version__,
         "asr_model": settings.asr_model,
         "summary_enabled": settings.client_summary_enabled or settings.feedback_enabled,
-        "llm_model": settings.gemini_model,
+        "llm_model": settings.llm_model if is_ollama else settings.gemini_model,
     }
 
 
@@ -98,32 +142,45 @@ async def upload_job(
     if num_speakers is not None and num_speakers <= 0:
         num_speakers = None
 
-    job_id = create_job(original_name=file.filename or "recording", num_speakers=num_speakers, language=language)
-
-    # Save the original file (always in .mp4 format for uniformity — ffmpeg identifies by content)
+    # Save the original file (always in .mp4 format for uniformity — ffmpeg identifies by content).
+    # The job row is inserted only AFTER the file is complete: a 'queued' row is claimed by the
+    # worker within poll_interval_sec, and ffmpeg on a half-written file fails ("moov atom not
+    # found" — the MP4 index is usually written at the end of the file). The bytes go to a .part
+    # name first and are renamed atomically, so the final path never holds a partial file.
+    job_id = uuid.uuid4().hex
     dest = settings.uploads_dir / f"{job_id}.mp4"
+    part = settings.uploads_dir / f"{job_id}.mp4.part"
     max_bytes = settings.max_upload_mb * 1024 * 1024
     written = 0
     try:
-        with dest.open("wb") as out:
+        with part.open("wb") as out:
             while chunk := await file.read(1024 * 1024):
                 written += len(chunk)
                 if written > max_bytes:
-                    out.close()
-                    dest.unlink(missing_ok=True)
-                    delete_job(job_id)
                     raise HTTPException(
                         status_code=413,
                         detail=f"הקובץ גדול מהמותר ({settings.max_upload_mb}MB).",
                     )
                 out.write(chunk)
+        if written == 0:
+            raise HTTPException(status_code=400, detail="Empty file received.")
+        os.replace(part, dest)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
     finally:
         await file.close()
 
-    if written == 0:
+    try:
+        create_job(
+            original_name=file.filename or "recording",
+            num_speakers=num_speakers,
+            language=language,
+            job_id=job_id,
+        )
+    except BaseException:
         dest.unlink(missing_ok=True)
-        delete_job(job_id)
-        raise HTTPException(status_code=400, detail="Empty file received.")
+        raise
 
     return JobSummary.from_row(get_job(job_id))
 
@@ -171,11 +228,27 @@ def rename_speakers(job_id: str, payload: SpeakerRename) -> TranscriptResult:
     result = load_result(job_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Result not found")
+    old_speakers = dict(result.get("speakers") or {})
     for sid, name in payload.speakers.items():
         if sid in result["speakers"] and name.strip():
             result["speakers"][sid] = name.strip()
+    if settings.pii_reidentify_enabled:
+        reidentify.reidentify_deliverables_for_speakers(
+            result, old_speakers, categories=settings.reidentify_category_list
+        )
     save_result(job_id, result)
     index_job_segments(job_id, result)  # Re-index the search with the updated names
+    pii_path = settings.results_dir / f"{job_id}.pii.json"
+    if pii_path.exists():
+        import json as _json
+
+        try:
+            pii_res = _json.loads(pii_path.read_text(encoding="utf-8"))
+            pii_res["speakers"] = reidentify.safe_speaker_labels(result["speakers"])
+            pii_path.write_text(_json.dumps(pii_res, ensure_ascii=False, indent=2), encoding="utf-8")
+            (settings.results_dir / f"{job_id}.pii.docx").unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
     return TranscriptResult(**_with_legacy_checks(result))
 
 
@@ -210,21 +283,15 @@ def summarize_job(job_id: str) -> TranscriptResult:
     if settings.client_summary_enabled:
         try:
             check: dict = {}
-            result["client_summary"] = generate_client_summary(settings, result, report=check)
-            if check:
-                result["client_summary_check"] = check
-            else:
-                result.pop("client_summary_check", None)
+            text = generate_client_summary(settings, result, report=check)
+            store_deliverable(result, "client_summary", text, check)
         except LLMError as exc:
             errors.append(str(exc))
     if settings.feedback_enabled:
         try:
             check = {}
-            result["feedback"] = generate_feedback(settings, result, report=check)
-            if check:
-                result["feedback_check"] = check
-            else:
-                result.pop("feedback_check", None)
+            text = generate_feedback(settings, result, report=check)
+            store_deliverable(result, "feedback", text, check)
         except LLMError as exc:
             errors.append(str(exc))
 
@@ -283,18 +350,22 @@ def export_feedback_xlsx() -> Response:
         res = load_result(job["id"])
         if not res:
             continue
-        cs = res.get("client_summary")
-        fb = res.get("feedback")
+        # Prefer the tagged (de-identified) text when the deliverable was re-identified:
+        # the Excel sheet feeds the RAG corpus and must never carry restored real names.
+        cs = res.get("client_summary_pseudo") or res.get("client_summary")
+        fb = res.get("feedback_pseudo") or res.get("feedback")
         if not cs and not fb:
             continue
         if cs:
-            cs, removed = sanitize_caller_text(cs, template=cs_template)
-            if removed:
+            had_pseudo = bool(res.get("client_summary_pseudo"))
+            cs, removed = sanitize_caller_text(reidentify.to_generic(cs), template=cs_template)
+            if removed and not had_pseudo:
                 log.warning("Excel export: job %s client summary held redaction placeholders %s; sanitised",
                             job["id"], sorted(set(removed)))
         if fb:
-            fb, removed = sanitize_caller_text(fb, template=fb_template)
-            if removed:
+            had_pseudo = bool(res.get("feedback_pseudo"))
+            fb, removed = sanitize_caller_text(reidentify.to_generic(fb), template=fb_template)
+            if removed and not had_pseudo:
                 log.warning("Excel export: job %s feedback held redaction placeholders %s; sanitised",
                             job["id"], sorted(set(removed)))
         name = (job.get("original_name") or job["id"]).rsplit(".", 1)[0]
@@ -323,11 +394,12 @@ def llm_status() -> dict:
     from .pipeline.pii import pii_engine_status
 
     enabled = settings.client_summary_enabled or settings.feedback_enabled
+    is_ollama = getattr(settings, "llm_provider", "gemini") == "ollama"
     return {
         "enabled": enabled,
         "available": enabled and check_available(settings),
-        "model": settings.gemini_model,
-        "provider": "gemini",
+        "model": settings.llm_model if is_ollama else settings.gemini_model,
+        "provider": "ollama" if is_ollama else "gemini",
         "api_key_set": bool(settings.gemini_api_key),
         # Why, when "available" is False: a bare False sent us hunting the wrong dependency once.
         "pii_engines": pii_engine_status(settings),
@@ -519,6 +591,13 @@ def _content_disposition(filename: str) -> dict[str, str]:
     return {"Content-Disposition": f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename)}"}
 
 
+@app.exception_handler(WordExportUnavailable)
+async def _word_unavailable(request: Request, exc: WordExportUnavailable) -> JSONResponse:
+    log.warning("Word export unavailable — %s", exc)
+    return JSONResponse(status_code=503, content={"detail": "Word export is unavailable on this server "
+                                                            "(python-docx failed to load)"})
+
+
 @app.get("/api/jobs/{job_id}/export")
 def export(job_id: str, format: str = "txt") -> Response:
     fmt = format.lower()
@@ -603,6 +682,9 @@ def remove_job(job_id: str) -> Response:
     result_path(job_id).unlink(missing_ok=True)
     for extra in (f"{job_id}.docx", f"{job_id}.pii.json", f"{job_id}.pii.docx", f"{job_id}.diar.json"):
         (settings.results_dir / extra).unlink(missing_ok=True)
+    # an ASR copy (or its temp files) left by a worker that died mid-transcription
+    for p in settings.audio_dir.glob(f"{job_id}_asr*.wav"):
+        p.unlink(missing_ok=True)
     delete_job(job_id)
     return Response(status_code=204)
 

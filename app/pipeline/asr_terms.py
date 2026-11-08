@@ -117,14 +117,37 @@ _SINGLE: dict[str, str] = {
     "נורג'יסטון": "נורג'סטון", "נורדיסטון": "נורג'סטון", "נורזיסטון": "נורג'סטון",
     "המונט": "הרמונט", "ארמונת": "הרמונט",
     "הידרוספונוגרפיה": "הידרוסונוגרפיה", "הדרעה": "הזרעה",
+    # Genetic & halachic counselling garbles observed in 8 kHz phone calls
+    "רצפסיבית": "רצסיבית", "רצפסיביות": "רצסיביות", "רצפסיבי": "רצסיבי", "רצפסיביים": "רצסיביים",
+    "כומוזום": "כרומוזום", "כומוזומים": "כרומוזומים",
+    "מהאמבר": "מהאבא", "האמבר": "האבא",
+    "האפריות": "האחריות",
+    "והדורשערים": "ודור ישרים", "הדורשערים": "דור ישרים", "דורשערים": "דור ישרים",
+    "עין-קארי": "עין כרם",
+    "טייזקס": "טיי-זקס",
+    "תפודר": "שטרודל",
+    "קצוע": "קטוע",
+    "פינשטיין": "פיינשטיין",
 }
 # Only after a glued prefix that ENDS with the definite article ה ("המרינה", "שהמרינה"):
 # bare, these are first names or words (Marina, Lina) and stay untouched.
 _DEFINITE_ONLY: dict[str, str] = {
     "מרינה": "מירנה", "קלינה": "קיילינה", "קנינה": "קיילינה", "קילנה": "קיילינה",
 }
+# "מרינה" is also the ordinary noun "marina" (a yacht harbour), and "the marina" is spelled exactly
+# like the definite garble of Mirena. The rule is therefore skipped (B7) in a segment that names a
+# harbour or a yacht. The list holds only nouns no counselling sentence uses in another sense, after
+# glued prefix letters too: not "סירה" ("הסירה" is also "she removed" — the IUD), "הפלגה" /
+# "להפליג" (exaggeration / to praise), "ים" / "חוף" (swimming with the device), "טיילת" ("you
+# walked"), "עוגן" (a support person), "נמלים" (ants), nor a preposition ("עברתי אל המרינה").
+_PLACE_NOUN_GARBLES = frozenset({"מרינה"})
+_HARBOUR_WORDS = frozenset({"נמל", "מזח", "יאכטה", "יאכטות", "יכטה", "מפרשית", "מפרשיות", "שייט"})
 # Consecutive Whisper words. The first may carry a glued prefix (and leading punctuation), inner
-# words match exactly, the last may carry trailing punctuation.
+# words match exactly, the last may carry trailing punctuation. With asr_join_split_words on, the
+# decoder's apostrophe split ("ג" + "'יסטון", "סארג" + "'ט") is glued before this table runs and the
+# glued forms match ("נורד", "ג'יסטון") here and "סארג'ט" in _SINGLE. The two split keys stay until
+# I1 is adopted (plan §3.6; L10 drops them "after I1"): with gluing off they are the only fix, and
+# with it on they never match a glued word.
 _MULTI: dict[tuple[str, ...], str] = {
     ("נורד", "ג", "'יסטון"): "נורג'סטון", ("נורד", "ג'יסטון"): "נורג'סטון",
     ("נור", "ג'יסטון"): "נורג'סטון", ("נורת", "איסטון"): "נורג'סטון",
@@ -132,9 +155,25 @@ _MULTI: dict[tuple[str, ...], str] = {
     ("שר", "הזית"): "סרזט", ("סארג", "'ט"): "סרזט",
     ("כותלי", "זרע"): "קוטלי זרע", ("הספק", "טהרה"): "הפסק טהרה",
     ("שולחנות", "פוליציסטיות"): "שחלות פוליציסטיות",
+    # Genetic & halachic counselling multi-word garbles (glued and unglued forms)
+    ("דור", "השערים"): "דור ישרים",
+    ("דור", "יש", "עמימם"): "דור ישרים",
+    ("עין", "קארי"): "עין כרם", ("עין", "-קארי"): "עין כרם",
+    ("שלחי", "רשות"): "של חירשות",
+    ("פאנל", "מוחם"): "פאנל מורחב",
+    ("החיה", "חוץ", "גופית"): "הפריה חוץ-גופית",
+    ("החיה", "חוץ", "-גופית"): "הפריה חוץ-גופית",
+    ("החיה", "חוץ-גופית"): "הפריה חוץ-גופית",
+    ("רב", "חופר"): "רב פופר", ("רב", "דב", "הופר"): "רב דב פופר",
+    ("משה", "פינשטיין"): "משה פיינשטיין",
+    ("לסגור", "וואות"): "לסגור וורט",
+    ("בצורות", "טובות"): "בשורות טובות",
+    ("תגורים", "טובים"): "צהריים טובים",
+    ("שם", "פחתי"): "שם הפרטי",
 }
 # NEVER map (tests assert they stay unchanged): bare מרינה/קלינה, לינה, יונה, "מי יונה", יסמין,
-# דיאנה, שרדת, הספק (alone), הספקה, תפילה, גבולות, מילות, "השר הזה", "הסר הזה", "סדר זאת", FIV.
+# דיאנה, שרדת, הספק (alone), הספקה, תפילה, גבולות, מילות, "השר הזה", "הסר הזה", "סדר זאת", FIV,
+# and "the marina" in a segment that names a harbour or a yacht.
 
 _MULTI_LENGTHS = sorted({len(k) for k in _MULTI}, reverse=True)  # longest key first
 # Hebrew one-letter prefixes that glue onto a word (ו/ה/ב/ל/מ/ש/כ), up to three of them.
@@ -169,14 +208,23 @@ def _prefix_splits(core: str):
         yield core[:cut], core[cut:]
 
 
-def _lookup_single(core: str) -> Optional[str]:
+def _lookup_single(core: str, place_noun_ok: bool = True) -> Optional[str]:
     for prefix, bare in _prefix_splits(core):
         canon = _SINGLE.get(bare)
-        if canon is None and prefix.endswith("ה"):
+        if canon is None and prefix.endswith("ה") and (place_noun_ok or bare not in _PLACE_NOUN_GARBLES):
             canon = _DEFINITE_ONLY.get(bare)
         if canon is not None:
             return prefix + canon
     return None
+
+
+def _names_harbour(tokens: Sequence[str]) -> bool:
+    """A token is a harbour or yacht noun (_HARBOUR_WORDS, also after glued prefix letters)."""
+    for tok in tokens:
+        core = _split(tok)[1]
+        if any(bare in _HARBOUR_WORDS for _p, bare in _prefix_splits(core)):
+            return True
+    return False
 
 
 def _match_multi(tokens: Sequence[str], i: int) -> Optional[tuple[int, list[str]]]:
@@ -190,11 +238,12 @@ def _match_multi(tokens: Sequence[str], i: int) -> Optional[tuple[int, list[str]
             continue
         lead, first, first_trail = _split(tokens[i])
         last_lead, last, trail = _split(tokens[i + n - 1])
-        if first_trail or last_lead or not first or not last:
+        if first_trail or (last_lead and last_lead != "-") or not first or not last:
             continue
+        last_tok = last_lead + last
         inner = tuple(t.translate(_APOSTROPHES) for t in tokens[i + 1:i + n - 1])
         for prefix, bare in _prefix_splits(first):
-            canon = _MULTI.get((bare,) + inner + (last,))
+            canon = _MULTI.get((bare,) + inner + (last_tok,))
             if canon is None:
                 continue
             parts = canon.split(" ")
@@ -207,6 +256,7 @@ def _match_multi(tokens: Sequence[str], i: int) -> Optional[tuple[int, list[str]
 def _rewrites(tokens: Sequence[str]) -> list[tuple[int, int, list[str]]]:
     """Every replacement in `tokens`, left to right: (index, tokens consumed, new tokens)."""
     out: list[tuple[int, int, list[str]]] = []
+    harbour: Optional[bool] = None  # computed on first need: most token lists hold no place noun
     i = 0
     while i < len(tokens):
         multi = _match_multi(tokens, i)
@@ -216,7 +266,12 @@ def _rewrites(tokens: Sequence[str]) -> list[tuple[int, int, list[str]]]:
             i += n
             continue
         lead, core, trail = _split(tokens[i])
-        canon = _lookup_single(core) if core else None
+        place_noun_ok = True
+        if core and any(bare in _PLACE_NOUN_GARBLES for _p, bare in _prefix_splits(core)):
+            if harbour is None:
+                harbour = _names_harbour(tokens)
+            place_noun_ok = not harbour
+        canon = _lookup_single(core, place_noun_ok) if core else None
         if canon is not None:
             out.append((i, 1, [lead + canon + trail]))
         i += 1
@@ -243,8 +298,10 @@ def normalize_text(text: str) -> tuple[str, int]:
 def normalize_word_list(words: list[dict]) -> tuple[list[dict], int]:
     """Apply the tables to Whisper word dicts. Returns (NEW dicts, replacements).
 
-    Extra keys are kept. Words merged into one take the first word's keys, its start and the
-    last word's end.
+    Extra keys are kept. Every word a rewrite produces carries "term_normalized": True. Words
+    merged into one take the first word's keys, its start, the last word's end and the LOWEST
+    probability of the group (no key when none has one): a fixed spelling does not make the
+    model's evidence stronger than its weakest piece.
     """
     rewrites = _rewrites([str(w.get("word", "")) for w in words])
     out: list[dict] = []
@@ -254,11 +311,16 @@ def normalize_word_list(words: list[dict]) -> tuple[list[dict], int]:
         group = words[i:i + n]
         if len(repl) == n:
             for w, new_word in zip(group, repl):
-                out.append(dict(w, word=new_word))
+                out.append(dict(w, word=new_word, term_normalized=True))
         else:
-            merged = dict(group[0], word=repl[0])
+            merged = dict(group[0], word=repl[0], term_normalized=True)
             if "end" in group[-1]:
                 merged["end"] = group[-1]["end"]
+            probs = [w["probability"] for w in group if w.get("probability") is not None]
+            if probs:
+                merged["probability"] = min(probs)
+            else:
+                merged.pop("probability", None)
             out.append(merged)
         pos = i + n
     out.extend(dict(w) for w in words[pos:])

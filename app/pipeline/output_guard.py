@@ -62,7 +62,7 @@ _VOCAB_EN_US = "|".join(sorted((w for w in _VOCAB_EN.split("|") if "_" in w), ke
 
 _OPEN_ANGLE = r"(?:\\?<|&lt;|＜)"
 _CLOSE_ANGLE = r"(?:\\?>|&gt;|＞)"
-_SUFFIX = r"(?:_\d*)?"  # numbered placeholders: <שם_1>, <PERSON_2>
+_SUFFIX = r"(?:[ _\-]?\d{1,3})?"  # numbered placeholders: <שם_1>, <PERSON_2>, <שם 1>
 
 # 1) Angle brackets: any short Hebrew body (no digits) or an UPPER_CASE label. Nesting
 #    ("<<ארגון_>_>"), spaces and bidi marks inside the brackets are tolerated. The blanks before
@@ -92,7 +92,7 @@ _BARE = (
 )
 # 6) The engines' own tag shape (pii_context._TAG_BODY), with no length limit — last, so the
 #    forms above (nesting, a trailing "_>") win wherever they match.
-_ENGINE = rf"<(?P<e>[{_H}]+_|[A-Z][A-Z_]*)>"
+_ENGINE = rf"<(?P<e>[{_H}]+_\d*|[A-Z][A-Z_]*\d*)>"
 
 _ANY = re.compile(rf"(?P<g>{_GLUE})?(?:{_ANGLE}|{_FANCY}|{_SQUARE}|{_ROUND}|{_BARE}|{_ENGINE})")
 
@@ -391,10 +391,40 @@ PLACEHOLDER_RULE = (
 )
 REMINDER = "תזכורת: אסור שתגית הסתרה כמו <שם_> או <ארגון_> תופיע בתשובה."
 
+# Re-identification mode (reidentify.py): names and organisations reach the model as numbered tags
+# that are replaced locally by the original values after the answer comes back, so the model may —
+# and should — keep them. Every other tag is still forbidden. Same wording constraints as above.
+PLACEHOLDER_RULE_REID = (
+    "כלל פרטיות קבוע: לפני שהתמלול הגיע אליך הוסרו ממנו פרטים מזהים, וכל פרט כזה הוחלף בתגית הסתרה. "
+    "שמות של אנשים ושל ארגונים הוחלפו בתגית ממוספרת, למשל <שם_1>, <שם_2>, <ארגון_1>, ואותו מספר מציין "
+    "תמיד את אותו אדם או את אותו ארגון. כאשר יש צורך להזכיר אדם או ארגון כזה, העתק את התגית הממוספרת "
+    "בדיוק כפי שהיא מופיעה בתמלול (מותר להצמיד לה אות שימוש, כמו ל<שם_1> או ב<ארגון_1>), והקפד לשייך "
+    "כל תגית לאדם או לארגון הנכון. אל תמציא תגית או מספר שאינם מופיעים בתמלול, ואל תנחש מה הוסתר. "
+    "כל תגית אחרת, למשל <שם_>, <מיקום_>, <ארגון_>, <קשר_>, <מזהה_>, <תאריך_>, <יום_>, <חודש_>, <שנה_>, "
+    "<TIME>, ובכלל זה כל תגית ללא מספר, אסור להעתיק לטקסט שאתה כותב, בשום צורה: לא בסוגריים משולשים, "
+    "לא בסוגריים מרובעים ולא ללא סוגריים. במקומה כתוב ניסוח כללי או השמט את הפרט: מקומות, מספרי טלפון, "
+    "כתובות מייל, מספרי זהות ותאריכים יושמטו. "
+    "אם תגית מופיעה בתוך נוסח קבוע שאתה מתבקש להחזיר, השמט אותה ונסח את המשפט מחדש באופן טבעי."
+)
+REMINDER_REID = (
+    "תזכורת: מותר להשתמש רק בתגיות ממוספרות של שמות וארגונים כפי שהן מופיעות בתמלול; "
+    "אסור שתגית אחרת, כמו <מיקום_> או <קשר_>, או תגית ללא מספר, תופיע בתשובה."
+)
 
-def repair_message(labels: list[str]) -> dict[str, str]:
-    """The user turn that asks the model to rewrite its previous (tagged) answer."""
+
+def repair_message(labels: list[str], *, reid: bool = False) -> dict[str, str]:
+    """The user turn that asks the model to rewrite its previous (tagged) answer.
+
+    reid: re-identification mode — the numbered name/organisation tags of the transcript are
+    allowed and must be kept; only the labels listed (the ones that cannot be restored) go."""
     shown = ", ".join(dict.fromkeys(labels)) or "<שם_>"
+    if reid:
+        return {"role": "user", "content": (
+            "בתשובה הקודמת הופיעו תגיות הסתרה שאינן מותרות (" + shown + "). כתוב את אותה תשובה מחדש, "
+            "באותו מבנה ובאותו תוכן: השאר כפי שהן רק תגיות ממוספרות של שמות וארגונים שמופיעות בתמלול, "
+            "והחלף כל תגית אחרת בניסוח כללי או השמט אותה, כך שהמשפטים יישארו תקינים וטבעיים. "
+            "החזר רק את הטקסט המתוקן."
+        )}
     return {"role": "user", "content": (
         "בתשובה הקודמת הופיעו תגיות הסתרה (" + shown + "). כתוב את אותה תשובה מחדש, באותו מבנה "
         "ובאותו תוכן, ללא אף תגית הסתרה: החלף כל תגית בניסוח כללי או השמט אותה, כך שהמשפטים "

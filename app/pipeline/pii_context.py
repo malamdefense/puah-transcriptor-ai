@@ -48,8 +48,10 @@ _P = f"[{_PREFIXES}]{{0,2}}"  # prefix letters glued to a Hebrew word
 
 # Only the engines' own tag vocabulary counts as an existing redaction: a Hebrew word plus "_"
 # (<שם_>, <קשר_>, <מיקום_> …) or an upper-case label (<MISC__AFF>). A bare "<" … ">" in a
-# summary ("פחות מ < 5% … >") must not shield what lies between.
-_TAG_BODY = rf"<(?:[{_H}]+_|[A-Z][A-Z_]*)>"
+# summary ("פחות מ < 5% … >") must not shield what lies between. The re-identification step
+# (reidentify.py) numbers tags per entity (<שם_1>, <ארגון_2>): the number is part of the tag, so
+# the number passes below never redact it.
+_TAG_BODY = rf"<(?:[{_H}]+_\d*|[A-Z][A-Z_]*\d*)>"
 _SPLIT_TAGS = re.compile(rf"({_TAG_BODY})")
 _IS_TAG = re.compile(_TAG_BODY)
 _TOKEN = re.compile(rf"{_TAG_BODY}|[{_H}A-Za-z0-9]+(?:[{_GERESH}\"״][{_H}A-Za-z]+)*")
@@ -162,7 +164,13 @@ _NO_PROPAGATE = frozenset(
 
 # ---------- self-introductions ----------
 # Anchored phrases that name a person outright, with or without a question being asked.
-_NAME_WORD = rf"[{_H}A-Za-z]{{2,}}(?:[{_GERESH}][{_H}]+)?"
+# A name may carry a geresh after its first letter ("ג'ני", "צ'רלי") or more than one ("ג'ורג'ינה");
+# with the decoder's pieces unglued (asr_join_split_words off) a space precedes it ("ג 'ני"). Only
+# after the letters a geresh modifies in transliteration (ג ז צ ץ ת): elsewhere a space before an
+# apostrophe opens a quotation ("דנה 'שלום'").
+_GERESH_LETTERS = "גזצץת"
+_NAME_WORD = (rf"[{_H}A-Za-z](?:[{_H}A-Za-z]|[{_GERESH}](?=[{_H}])"
+              rf"|(?<=[{_GERESH_LETTERS}])\s[{_GERESH}](?=[{_H}]))+")
 _TITLE = r"(?:ה?רב|ה?רבנית|ד\"?ר|דוקטור|פרופסור)\s+"
 _SELF_INTRO = [
     re.compile(rf"{_NLB}(?:קוראים|קורים)\s+(?:לי|לו|לה|לנו|לאשתי|לבעלי|לאשתו|לבעלה|לבן\s+שלי|לבת\s+שלי)"
@@ -192,13 +200,20 @@ _EN_STOP = frozenset(
 _NUM = re.compile(r"(?<!\d)(?<!\d\.)\d+(?:\.\d+)?(?!\d)(?!\.\d)")
 # Groups separated only by spaces, hyphens or commas read as one dictated number.
 _NUM_SEQ = re.compile(r"(?<!\d)(?<!\d\.)\d+(?:[ \t\-,]+\d+)+(?!\d)(?!\.\d)")
+# Digit groups joined by dots ("052.731.2290", "301.442", "3.5"). The decoder writes some numbers
+# this way; before its pieces were glued (asr_words) they reached this pass as "052 .731 .2290",
+# one number per group. _redact_numbers and the dictated-number count judge them so that gluing
+# never lets a phone/ID number, or a number given inside a request, through (_dotted_groups).
+_DOTTED_RUN = re.compile(r"(?<![\d.])\d+(?:\.\d+)+(?!\d)(?!\.\d)")
 _DIGIT_WORDS = "אפס|אחת|אחד|שתיים|שתים|שניים|שלוש|שלש|ארבע|חמש|שש|שבע|שמונה|תשע"
 _DW_RUN = re.compile(rf"{_NLB}ו?(?:{_DIGIT_WORDS}){_NLA}(?:[\s,\-]+ו?(?:{_DIGIT_WORDS}){_NLA})*")
 _DW_ONE = re.compile(rf"(?:{_DIGIT_WORDS})")
-_UNIT_BEFORE = re.compile(
-    rf"(?:{_NLB}{_P}(?:גיל|בת|בן|שבוע|שבועות|שנה|שנים|שנת|חודש|חודשים|יום|ימים|פי|סבב|מחזור|ניסיון"
-    rf"|רמה|רמת|ערך|תור|חדר|קומה|מקום){_NLA}|[A-Za-z]{{2,}})\s*-?\s*$"
+_UNIT_WORDS_BEFORE = (
+    "גיל|בת|בן|שבוע|שבועות|שנה|שנים|שנת|חודש|חודשים|יום|ימים|פי|סבב|מחזור|ניסיון"
+    "|רמה|רמת|ערך|תור|חדר|קומה|מקום"
 )
+_UNIT_BEFORE = re.compile(rf"(?:{_NLB}{_P}(?:{_UNIT_WORDS_BEFORE}){_NLA}|[A-Za-z]{{2,}})\s*-?\s*$")
+_UNIT_BEFORE_HE = re.compile(rf"{_NLB}{_P}(?:{_UNIT_WORDS_BEFORE}){_NLA}\s*-?\s*$")
 _UNIT_AFTER = re.compile(
     rf"\s*-?\s*(?:%|{_NLB}{_P}(?:אחוז|אחוזים|שקל|שקלים|ש\"ח|מ\"ג|מיליגרם|גרם|ק\"ג|ס\"מ|יחידות|שבוע"
     rf"|שבועות|שנה|שנים|ימים|יום|חודש|חודשים|פעמים|ביציות|עוברים|זרעונים|פגישות|ילדים){_NLA})"
@@ -364,6 +379,7 @@ def _propagates(term: str) -> bool:
     return (
         _letters(term) >= 3
         and not _in(term, _STOP)
+        and not _in(term, _FUNCTION_WORDS)
         and term.lower() not in _EN_STOP
         and not _in(term, _COMMON)
         and _bare(term) not in _NO_PROPAGATE
@@ -371,19 +387,36 @@ def _propagates(term: str) -> bool:
     )
 
 
+# A name is matched on its bare letters (_bare drops geresh and gershayim), so the text may carry a
+# geresh between any two of them, after the last, or — where the decoder's pieces were not glued
+# (asr_join_split_words off) — a space before it: "ג'ני" said in an answer, "ג'ני", "ג 'ני" or "גני"
+# where it recurs, "ג'ורג'" with the trailing mark. Without this a glued geresh name (asr_words) was
+# learned but never found again — not even in the answer it was learned from.
+_OPT_MARK = rf"(?:\s?[{_GERESH}]|[\"״])?"
+_OPT_TRAIL = f"[{_GERESH}]?"
+# The decoder's split at an inner geresh ("ג 'ני", "ג 'ורג 'ינה"): rejoined where an answer or a
+# self-introduction is read, so the name is learned whole (3+ letters, propagated), not as "ני".
+_SPLIT_GERESH = re.compile(rf"(?<=[{_GERESH_LETTERS}])\s(?=[{_GERESH}][{_H}])")
+
+
+def _rejoin(text: str) -> str:
+    return _SPLIT_GERESH.sub("", text)
+
+
 def _term_alt(term: str) -> str:
-    """Regex for one name, tolerant of ASR spelling: soundalike letters, and for longer names
-    an optional or extra mater lectionis (י/ו/ה) — "יהודית"/"יודית", "רבקה"/"ריבקה"."""
+    """Regex for one name, tolerant of ASR spelling: soundalike letters, a geresh or none between
+    letters, and for longer names an optional or extra mater lectionis (י/ו/ה) — "יהודית"/"יודית",
+    "רבקה"/"ריבקה"."""
     t = _bare(term)
     if len(t) < 4:
-        return "".join(_SOUNDALIKE.get(ch, re.escape(ch)) for ch in t)
+        return _OPT_MARK.join(_SOUNDALIKE.get(ch, re.escape(ch)) for ch in t) + _OPT_TRAIL
     parts = []
     for k, ch in enumerate(t):
         piece = _SOUNDALIKE.get(ch, re.escape(ch))
         if 0 < k < len(t) - 1 and ch in "יוה":
             piece = f"(?:{piece})?"
         parts.append(piece)
-    return "[יו]?".join(parts)
+    return f"{_OPT_MARK}[יו]?".join(parts) + _OPT_TRAIL
 
 
 # Spelling-tolerant matching is two steps: the regex finds candidates, then a candidate must be
@@ -427,7 +460,7 @@ class _TermMatcher:
         self.canon = canon
 
     def accepts(self, surface: str) -> bool:
-        c = _canon(surface)
+        c = _canon("".join(surface.split()))  # "ג 'ורג 'ינה": the decoder's split, one name
         return any(_within_one_edit(c, t) for t in self.canon)
 
 
@@ -476,14 +509,23 @@ def _answer_words(text: str, *, after_question: bool = False) -> list[str] | Non
             return None
         if words and _bare(words[0]) in _LEAD_PRONOUNS and any(_bare(w) in _CALL_VERBS for w in words):
             return None
-        content = [w for w in content if not _in(w, _CALL_VERBS) and not _in(w, _COMMON)
-                   and not _in(w, _FUNCTION_WORDS)
-                   and not _is_digit_word(w) and _letters(w) >= 2]
-        distinct = list(dict.fromkeys(content))
+        distinct = list(dict.fromkeys(_detail_words(content)))
         if not distinct:
             return [] if has_tag else None
-        return distinct if len(distinct) <= 3 else None
+        if len(distinct) > 3:
+            return None
+        # Whether the turn is an answer is judged on the words as written (above); what is learned
+        # is the name whole even where the decoder split it at its geresh: "ג 'ני" -> "ג'ני", not "ני".
+        joined = [w for w in _words(_rejoin(sentence)) if not _in(w, _STOP) and w.lower() not in _EN_STOP]
+        return list(dict.fromkeys(_detail_words(joined))) or distinct
     return None
+
+
+def _detail_words(words: list[str]) -> list[str]:
+    """The words of an answer that can be the detail itself (not call talk, counselling vocabulary,
+    a function word or a digit said as a word)."""
+    return [w for w in words if not _in(w, _CALL_VERBS) and not _in(w, _COMMON)
+            and not _in(w, _FUNCTION_WORDS) and not _is_digit_word(w) and _letters(w) >= 2]
 
 
 def _self_intro_names(text: str) -> list[str]:
@@ -491,7 +533,7 @@ def _self_intro_names(text: str) -> list[str]:
     found: list[str] = []
     for rx in _SELF_INTRO:
         for m in rx.finditer(plain):
-            for w in m.group("n").split():
+            for w in _rejoin(m.group("n")).split():
                 if (_in(w, _STOP) or _in(w, _CALL_VERBS) or _in(w, _COMMON) or w.lower() in _EN_STOP
                         or _in(w, _FUNCTION_WORDS)
                         or _bare(w) in _LEAD_PRONOUNS):
@@ -541,11 +583,14 @@ def _redact_spoken_email(text: str, counts: dict[str, int]) -> tuple[str, list[s
     at = _AT.search(plain)
     if not at or not _DOMAIN.search(plain[at.end():at.end() + 40]):
         return text, []
-    local = [w for w in _words(plain[:at.start()])[-3:] if not _in(w, _STOP) and _WORD.fullmatch(w)]
+    local = [
+        w for w in _words(plain[:at.start()])[-3:]
+        if not _in(w, _STOP) and not _in(w, _FUNCTION_WORDS) and _WORD.fullmatch(w)
+    ]
 
     def fn(chunk: str) -> str:
         def word(m: re.Match) -> str:
-            if _in(m.group(), _STOP):
+            if _in(m.group(), _STOP) or _in(m.group(), _FUNCTION_WORDS):
                 return m.group()
             counts["spelled"] += 1
             return TAG_CONTACT
@@ -591,6 +636,46 @@ def _redact_shapes(
     return _outside_tags(text, fn)
 
 
+def _dotted_groups(plain: str, m: re.Match, *, years: bool) -> list[tuple[int, int, bool]]:
+    """The digit groups of a dotted run as (start, end, protected), each judged as the separate
+    number it was before the decoder's pieces were glued ("052 .731 .2290", "3 .5"): the first
+    group is a clinical value after a unit word or a Latin lab name ("בת 34.5", "AMH 3.5"), the last
+    one before a unit or "%" ("3.5 אחוז"), and any group is a year when `years` is set."""
+    found = list(re.finditer(r"\d+", m.group()))
+    out = []
+    for k, g in enumerate(found):
+        s, e = m.start() + g.start(), m.start() + g.end()
+        protected = years and bool(_YEAR.fullmatch(g.group()))
+        if k == 0 and _UNIT_BEFORE.search(plain[:s]):
+            protected = True
+        if k == len(found) - 1 and (_UNIT_AFTER.match(plain, e) or _PERCENT.match(plain, e)):
+            protected = True
+        out.append((s, e, protected))
+    return out
+
+
+def _dotted_id_shape(m: re.Match) -> bool:
+    """A dotted run that cannot be a decimal: two or more dots, a first group with a leading zero
+    ("052.7312290"), or a phone/ID number's worth of digits. "3.5", "0.5" and "37.2" can."""
+    groups = m.group().split(".")
+    return (len(groups) >= 3 or sum(len(g) for g in groups) >= _PHONE_RUN
+            or (groups[0][0] == "0" and len(groups[0]) >= 2))
+
+
+def _dotted_unit(plain: str, m: re.Match) -> bool:
+    """A unit word or "%" around the whole run ("1.250.000 שקל" is a price). Unlike _UNIT_BEFORE a
+    Latin word is no unit here: "is 052.731.2290" is a phone number."""
+    return bool(_UNIT_AFTER.match(plain, m.end()) or _UNIT_BEFORE_HE.search(plain[: m.start()]))
+
+
+def _dotted_digits(plain: str) -> int:
+    """Digits of the dotted runs in a short turn that count towards a number dictated across turns,
+    as the same groups counted before gluing. A dotted date ("12.10.2025") is a date, tagged by
+    _redact_dates, not part of a dictated number."""
+    return sum(e - s for m in _DOTTED_RUN.finditer(plain) if not _NUMERIC_DATE.fullmatch(m.group())
+               for s, e, protected in _dotted_groups(plain, m, years=True) if not protected)
+
+
 def _protected_spans(plain: str, *, years: bool = True) -> list[tuple[int, int]]:
     """Numbers that are clinical facts, not identifiers: ratios, decimals, percentages, ages,
     weeks, prices, lab values — and, outside a request, years."""
@@ -629,6 +714,26 @@ def _redact_numbers(text: str, counts: dict[str, int], *, everything: bool, tag:
                 continue
             if everything or len(g) >= 7 or (g[0] == "0" and len(g) >= 3):
                 doomed.append(m.span())
+        # Dot-joined groups ("052.731.2290", "301.442", "3.5"). Before the decoder's pieces were glued
+        # (asr_words) each group reached this pass as a number of its own ("052 .731 .2290"), and
+        # each group is still judged exactly that way (_dotted_groups), so gluing never lowers what
+        # is removed: inside a request every unprotected group goes — a phone number dictated in
+        # pieces may well be read with a dot ("731.22") — and outside one a 7+ digit group or a
+        # 0-led one of 3+ digits. On top of that a run that cannot be a decimal goes like a
+        # hyphenated number (all of it at 7+ digits) unless a unit makes it a value
+        # ("1.250.000 שקל"); a Latin word is no such unit ("is 052.731.2290").
+        for m in _DOTTED_RUN.finditer(chunk):
+            id_run = _dotted_id_shape(m) and not _dotted_unit(chunk, m)
+            whole = id_run and sum(ch.isdigit() for ch in m.group()) >= _PHONE_RUN
+            for s, e, protected in _dotted_groups(chunk, m, years=not everything):
+                d = chunk[s:e]
+                shape = len(d) >= 7 or (d[0] == "0" and len(d) >= 3)
+                if everything:
+                    doom = id_run or not protected
+                else:
+                    doom = whole or (shape and (id_run or not protected))
+                if doom:
+                    doomed.append((s, e))
         # Digits dictated as words: any pair inside a request, a full number's worth outside one.
         need = 2 if everything else _PHONE_RUN
         for m in _DW_RUN.finditer(chunk):
@@ -771,6 +876,7 @@ def contextual_redact(
                      if "." not in m.group() and not _PERCENT.match(plain, m.end())
                      and not _covered(m.start(), spans))
         digits += sum(len(_DW_ONE.findall(m.group())) for m in _DW_RUN.finditer(plain))
+        digits += _dotted_digits(plain)  # "731.22": the groups count as they did before gluing
         if not digits:
             return 0
         others = [w for w in _words(plain) if not _in(w, _STOP) and not _is_digit_word(w)]
@@ -854,7 +960,7 @@ _FUNCTION_WORDS = frozenset(
     בלי בכל כל כמו כך ככה אחרי לפני בגלל בשביל לגבי כלומר דרך תהליך גבול גבולות מצב בעיה עניין
     מקרה שאלה תשובה כלל בכלל אסור מותר הלכה הלכתי הלכתית רבנים פוסק פסק בעזרת סיבה תקופה
     גריס כתם כתמים וסת וסתות הפסק טהרה נידה מקווה טבילה נקיים הרחקות עונה עונות ליבון חציצה
-    פרישה בדיקה בדיקות עד עדים
+    פרישה בדיקה בדיקות עד עדים סוף בסוף ובסוף התחלה בהתחלה
     """.split()
 )
 # The institute itself is not an identifier. Its name sits in our own prompt template ("ניתן לפנות
@@ -904,7 +1010,7 @@ _COUNTRIES = frozenset(
     argentina brazil germany belgium switzerland europe mexico
     """.split()
 )
-_NON_PERSON_TAGS = re.compile(r"<(?:מיקום_|ארגון_|MISC[A-Z_]*)>")
+_NON_PERSON_TAGS = re.compile(r"<(?:מיקום_\d*|ארגון_\d*|MISC[A-Z_]*)>")
 _MIXABLE = _HEALTH_FUNDS | _INSTITUTION | _COUNTRIES | _STOP | _FUNCTION_WORDS
 
 

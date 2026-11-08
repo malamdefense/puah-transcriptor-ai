@@ -49,6 +49,24 @@ CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
     text,
     tokenize='trigram case_sensitive 0'
 );
+
+-- אינדקס היברידי לחוברת ההדרכה ("תשעה ירחי מידע"): FTS5 trigram + וקטורי bge-m3 מחושבים מראש
+CREATE TABLE IF NOT EXISTS booklet_chunks (
+    id          INTEGER PRIMARY KEY,
+    section     TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    terms       TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    embedding   BLOB
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS booklet_fts USING fts5(
+    title,
+    section,
+    terms,
+    text,
+    tokenize='trigram case_sensitive 0'
+);
 """
 
 
@@ -64,10 +82,12 @@ def _connect() -> sqlite3.Connection:
 
 def get_conn() -> sqlite3.Connection:
     """Connection per-thread (SQLite does not allow sharing connections between threads)."""
+    target_path = get_settings().db_path
     conn = getattr(_local, "conn", None)
-    if conn is None:
+    if conn is None or getattr(_local, "db_path", None) != target_path:
         conn = _connect()
         _local.conn = conn
+        _local.db_path = target_path
     return conn
 
 
@@ -76,8 +96,18 @@ def init_db() -> None:
     conn.executescript(SCHEMA)
 
 
-def create_job(original_name: str, num_speakers: Optional[int], language: str) -> str:
-    job_id = uuid.uuid4().hex
+def create_job(
+    original_name: str,
+    num_speakers: Optional[int],
+    language: str,
+    job_id: Optional[str] = None,
+) -> str:
+    """Insert a job as 'queued' — the worker may claim it immediately.
+
+    Callers that store an input file must pass a pre-generated job_id and insert only
+    after the file is completely on disk (see main.upload_job).
+    """
+    job_id = job_id or uuid.uuid4().hex
     now = time.time()
     get_conn().execute(
         """INSERT INTO jobs (id, original_name, status, progress, num_speakers,

@@ -33,6 +33,10 @@ _BACKCHANNEL_MAX_WORDS = 3
 _PHRASE_MAX_WORDS = 4
 _TIE_EPS = 1e-6
 _DEFAULT_SPEAKER = "SPEAKER_00"
+# Per-word keys carried from the ASR words to the merged words when present and not None (no rule
+# reads them, so speaker labels never depend on them): the word probability (rounded to 3
+# decimals), the decode window's "check against the audio" flag, and a per-word language.
+CARRY_KEYS: tuple[str, ...] = ("probability", "window_flag", "lang")
 
 _SENT_END = re.compile(r"[.?!…]['\"״)\]]*$")
 _QUESTION_END = re.compile(r"\?['\"״)\]]*$")
@@ -142,10 +146,20 @@ def _flatten(asr_segments: list[dict]) -> list[dict]:
         seg_words = seg.get("words") or []
         if seg_words:
             for w in seg_words:
-                words.append({"start": w["start"], "end": w["end"], "word": w["word"], "_seg": si})
+                word = {"start": w["start"], "end": w["end"], "word": w["word"], "_seg": si}
+                for key in CARRY_KEYS:
+                    if w.get(key) is not None:
+                        word[key] = w[key]
+                words.append(word)
         else:
-            # No time stamps at the word level — treat the segment as a single unit
-            words.append({"start": seg["start"], "end": seg["end"], "word": seg.get("text", ""), "_seg": si})
+            # No time stamps at the word level — treat the segment as a single unit. It keeps the
+            # segment's own window flag (and language, when a segment has one), so a flagged
+            # decode window is still marked "check against the audio".
+            unit = {"start": seg["start"], "end": seg["end"], "word": seg.get("text", ""), "_seg": si}
+            for key in CARRY_KEYS[1:]:
+                if seg.get(key) is not None:
+                    unit[key] = seg[key]
+            words.append(unit)
     # By start only: the sort is stable, so words that start together keep their transcript order
     # (the clean-up's time-order guard clamps a start to the previous one, leaving a shorter end).
     words.sort(key=lambda w: w["start"])
@@ -326,11 +340,17 @@ def _smooth(words: list[dict]) -> tuple[int, int]:
 
 def _build_segments(words: list[dict]) -> tuple[list[dict], list[str]]:
     """Display segments: a new one on a speaker change or a gap over 1.2 s. Word dicts are
-    rebuilt as exactly {start, end, word, speaker}, without the internal keys."""
+    rebuilt as {start, end, word, speaker} plus the CARRY_KEYS the word has, without the
+    internal keys."""
     segments: list[dict] = []
     cur: dict | None = None
     for w in words:
         word = {"start": w["start"], "end": w["end"], "word": w["word"], "speaker": w["speaker"]}
+        if w.get("probability") is not None:
+            word["probability"] = round(float(w["probability"]), 3)
+        for key in CARRY_KEYS[1:]:
+            if w.get(key) is not None:
+                word[key] = w[key]
         new_block = (
             cur is None
             or word["speaker"] != cur["speaker"]
@@ -367,34 +387,43 @@ def merge(
     exclusive_turns: list[dict] | None = None,
     *,
     smooth: bool = True,
+    stats: dict | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Return (segments, speaker_ids).
 
-    segments — display segments: {start, end, speaker, text, words:[{start, end, word, speaker}]}.
+    segments — display segments: {start, end, speaker, text, words:[{start, end, word, speaker}]};
+    a word also carries `probability` (3 decimals), `window_flag` and `lang` when its ASR word has
+    them (CARRY_KEYS).
     speaker_ids — list of unique speaker IDs in the order of their appearance.
 
     turns — the regular diarization {start, end, speaker} (different speakers may overlap).
     exclusive_turns — pyannote's exclusive diarization of the same run (same labels). When given,
     words are assigned on it and back-channel replies are kept from `turns` (R0).
     smooth — relabel islands (R1) and sentence tails (R2).
+    stats — when a dict, it is updated with counts only: {words, outside (words in no turn),
+    exclusive, smooth, r0, r1, r2 (words relabelled by each rule)}.
     The inputs are not modified.
     """
     words = _flatten(asr_segments)
+    outside = restored = r1 = r2 = 0
+    if words:
+        primary = exclusive_turns or turns
+        if not primary:
+            for w in words:
+                w["speaker"] = _DEFAULT_SPEAKER
+            outside = len(words)
+        else:
+            outside = _assign(words, primary)
+            restored = _protect_backchannels(words, turns) if exclusive_turns and turns else 0
+            r1, r2 = _smooth(words) if smooth else (0, 0)
+            # Counts only — never transcript text
+            log.debug(
+                "merge: %d words, %d outside every turn, exclusive=%s, R0 %d, R1 %d, R2 %d words relabelled",
+                len(words), outside, bool(exclusive_turns), restored, r1, r2,
+            )
+    if stats is not None:
+        stats.update({"words": len(words), "outside": outside, "exclusive": bool(exclusive_turns),
+                      "smooth": bool(smooth), "r0": restored, "r1": r1, "r2": r2})
     if not words:
         return [], []
-
-    primary = exclusive_turns or turns
-    if not primary:
-        for w in words:
-            w["speaker"] = _DEFAULT_SPEAKER
-    else:
-        outside = _assign(words, primary)
-        restored = _protect_backchannels(words, turns) if exclusive_turns and turns else 0
-        r1, r2 = _smooth(words) if smooth else (0, 0)
-        # Counts only — never transcript text
-        log.debug(
-            "merge: %d words, %d outside every turn, exclusive=%s, R0 %d, R1 %d, R2 %d words relabelled",
-            len(words), outside, bool(exclusive_turns), restored, r1, r2,
-        )
-
     return _build_segments(words)

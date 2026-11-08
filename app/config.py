@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,10 +40,12 @@ class Settings(BaseSettings):
 
     # --- ASR decoding (faster-whisper options; measured on the institute's calls) ---
     # faster-whisper's 2.4 assumes 1-byte text: Hebrew is 2 bytes per letter in UTF-8, so normal
-    # 30 s Hebrew windows score 1.9-2.55 and a correct window was needlessly re-decoded by random
-    # sampling (up to temperature 1.0). 2.8 removed every false fallback and still catches loops
-    # that fill most of a window. None disables the check.
-    asr_compression_ratio_threshold: float | None = Field(default=2.8)
+    # 30 s Hebrew windows score up to ~2.52 (1,642 measured decodes) and correct windows were
+    # needlessly re-decoded by random sampling (up to temperature 1.0). 2.6 removed every false
+    # fallback on the Hebrew calls; higher values (2.7-2.8) let a looping window through on a mixed
+    # Hebrew/English call, whose Hebrew text then turned the following English into a Hebrew
+    # paraphrase. None disables the check.
+    asr_compression_ratio_threshold: float | None = Field(default=2.6)
     asr_log_prob_threshold: float | None = Field(default=-1.0)
     asr_no_speech_threshold: float | None = Field(default=0.6)
     # Temperature fallback, comma-separated ("0.0,0.2,0.4"); see the asr_temperature_list property
@@ -50,7 +53,10 @@ class Settings(BaseSettings):
     # None / "auto" = automatic: False when hotwords are passed (prompt + output share Whisper's
     # 448-token window, and carried-over text already fills it), True otherwise (the library default).
     asr_condition_on_previous_text: bool | None = Field(default=None)
-    asr_prompt_reset_on_temperature: float = Field(default=0.5)
+    # Drop the carried-over text after any window that needed a fallback (library: only above 0.5).
+    # A low-temperature sample of a bad window otherwise conditions the next windows: on the mixed
+    # call it was the difference between English kept (8/8 seeded runs) and paraphrased (5/12).
+    asr_prompt_reset_on_temperature: float = Field(default=0.0)
     # Keep 1.0 / 0: on Hebrew sub-word tokens a penalty removed genuine "לא, לא, לא" and commas,
     # and no_repeat_ngram_size corrupted words (even emitting invalid UTF-8).
     asr_repetition_penalty: float = Field(default=1.0, ge=1.0)
@@ -70,7 +76,7 @@ class Settings(BaseSettings):
     asr_hotwords_enabled: bool = Field(default=False)
     asr_hotwords_extra: str = Field(default="")  # comma-separated, appended after the curated list
     asr_hotwords_max_tokens: int = Field(default=64, ge=0)
-    # Closed table of known ASR garbles -> canonical spelling ("נורד ג 'יסטון" -> "נורג'סטון").
+    # Closed table of known ASR garbles -> canonical spelling ("נורי דיי" -> "נורידיי").
     # Exact match only: never fuzzy, never a word that is also a first name or an ordinary word.
     asr_term_normalization_enabled: bool = Field(default=True)
 
@@ -82,6 +88,67 @@ class Settings(BaseSettings):
     asr_cleanup_min_collapsed_unigram_copies: int = Field(default=3, ge=1)
     asr_cleanup_max_unigram_copies: int = Field(default=10, ge=0)  # 0 = no cap
     asr_cleanup_max_phrase_copies: int = Field(default=5, ge=0)  # 0 = no cap
+
+    # --- Word pieces, confidence display, merge telemetry (Phase A of the ASR study) ---
+    # faster-whisper splits a word at an inner apostrophe, hyphen, decimal point, thousands comma
+    # or before a trailing "%", and the transcript showed a space the decoder never wrote. The
+    # transcriber keeps the pieces (and the raw sidecar keeps them); the post-processing glues
+    # them back (asr_words.join_split_words).
+    # OFF until the study's I1 acceptance replay passes (plan §3.6 I1 (a)-(f) on the round-1 B0
+    # decodes): gluing changes what the PII pass and the per-speaker confidence see. Turn it on with
+    # PUAH_ASR_JOIN_SPLIT_WORDS=true in .env only after that, through the deployment runbook.
+    asr_join_split_words: bool = Field(default=False)
+    # Mark words of a decode window whose kept result failed a quality gate or was sampled at
+    # temperature >= 0.6 ("check against the audio" in the UI).
+    asr_window_flags: bool = Field(default=True)
+    # How word confidence is scored: "mean" = faster-whisper's mean token probability (today). The
+    # only value until a recorder for another score ships ("k1" after the study's H3 decision), so a
+    # typo can never mislabel the stored provenance.
+    asr_confidence_mode: Literal["mean"] = Field(default="mean")
+    # Stored in each result as `confidence_display`; the UI's low-confidence word marks are an
+    # opt-in, "unvalidated" hint below this threshold (provisional for the turbo model).
+    confidence_display_enabled: bool = Field(default=True)
+    confidence_display_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Log the merge's relabel counts (R0/R1/R2) at INFO and store them in asr_postprocess.merge.
+    merge_log_counts: bool = Field(default=True)
+
+    # --- Recording-quality check (measured on 29 real calls + controlled degradations) ---
+    # Detection runs on every job and is reported in the result; a fix touches only the copy the
+    # ASR hears, only when its own measured condition holds. Diarization always gets the original.
+    audio_check_enabled: bool = Field(default=True)
+    audio_check_min_speaker_s: float = Field(default=10.0, ge=0.0)  # speakers with less speech are not judged
+    audio_check_noise_flat_warn: float = Field(default=0.03)  # speech spectral flatness (clean calls <= 0.02)
+    audio_check_noise_flat_severe: float = Field(default=0.12)
+    audio_check_quiet_gap_warn_db: float = Field(default=12.0)  # a party this much below the loudest one
+    audio_check_quiet_gap_severe_db: float = Field(default=25.0)
+    audio_check_clip_frac: float = Field(default=0.005)  # share of samples at full scale ...
+    audio_check_clip_hist: float = Field(default=10.0)  # ... and the amplitude-histogram pile-up there
+    audio_check_narrowband_hz: float = Field(default=3000.0)  # speech spectrum edge (telephone ~3.6-4.2 kHz)
+    audio_check_vad_drop_warn: float = Field(default=0.10)  # share of a party's speech never transcribed
+    audio_check_lowconf_lowp: float = Field(default=0.10)  # share of a party's words below probability 0.5 ...
+    audio_check_lowconf_wprob: float = Field(default=0.80)  # ... or its mean word probability below this
+    # Fixes. Noise and clipping are only reported: every denoiser tested (afftdn, anlmdn) and adeclip
+    # made the transcription worse or did nothing; Whisper copes with noise better than with artefacts.
+    # Speech the VAD cuts out before ASR (4 of 29 calls): if the VAD would keep this much more of the
+    # call at threshold 0.2, the job is transcribed with the VAD threshold below (+3-17% words).
+    audio_fix_vad_enabled: bool = Field(default=True)
+    audio_fix_vad_gain_trigger: float = Field(default=0.06)
+    audio_fix_vad_threshold: float = Field(default=0.35)
+    # One party much quieter: lift each quieter party's turns to the loudest party's level (only the
+    # ASR copy; recovered ~half of the lost accuracy at an 18 dB gap; within noise below ~12 dB).
+    audio_fix_speaker_gain_enabled: bool = Field(default=True)
+    audio_fix_speaker_gain_min_gap_db: float = Field(default=12.0)
+    audio_fix_speaker_gate_min_speech_s: float = Field(default=30.0)  # speakers that count for the gap
+    audio_fix_speaker_gain_min_speech_s: float = Field(default=2.0)  # speakers that may be lifted
+    audio_fix_speaker_gain_max_db: float = Field(default=24.0)
+    audio_fix_speaker_gain_peak: float = Field(default=0.95)  # 99.9th-percentile peak after the lift
+    audio_fix_speaker_gain_ramp_ms: float = Field(default=50.0)
+    # Strong mains hum: notch 50 Hz and harmonics (hurts clean audio, hence the gate).
+    audio_fix_hum_enabled: bool = Field(default=True)
+    audio_fix_hum_threshold_db: float = Field(default=-20.0)  # 45-55 Hz power vs 300-3400 Hz
+    # Whole call recorded very quietly: loudnorm (hurts normal-level audio, hence the gate).
+    audio_fix_low_level_enabled: bool = Field(default=True)
+    audio_fix_low_level_dbfs: float = Field(default=-30.0)  # active speech level of the whole file
 
     # --- Language detection (after merge; decoding stays `language`) ---
     # The ivrit-ai model's language-ID head always answers "he", even on English speech, so the
@@ -124,9 +191,21 @@ class Settings(BaseSettings):
     # and logged). The fixed "never copy a placeholder" rule in the prompt and the clean-up of the
     # Word/Excel exports stay on either way.
     llm_tag_guard_enabled: bool = Field(default=True)
+    # Controlled re-identification (pipeline/reidentify.py): names and organisations reach the model
+    # as numbered tags (<שם_1>, <ארגון_2>) and are put back locally into the answer — the model still
+    # never sees a value. The mapping lives in memory for one deliverable only. Only the categories
+    # listed are ever restored (phones, IDs, e-mails, places and dates never are). Off = the former
+    # behaviour: every tag is removed from the answer.
+    pii_reidentify_enabled: bool = Field(default=True)
+    pii_reidentify_categories: str = Field(default="שם,ארגון")
+    pii_reidentify_client_summary: bool = Field(default=True)
+    pii_reidentify_feedback: bool = Field(default=True)
 
     # --- Local Ollama server — currently used only for embeddings (RAG/evaluation) ---
     # Ollama is still required for the embedding model (bge-m3).
+    llm_provider: Literal["gemini", "ollama"] = Field(default="gemini")
+    llm_model: str = Field(default="muse-glimmer")
+    llm_think: bool = Field(default=False)
     llm_base_url: str = Field(default="http://localhost:11434/v1")
     llm_timeout_sec: float = Field(default=600.0)
 
@@ -151,6 +230,11 @@ class Settings(BaseSettings):
     # --- Semantic RAG (local embeddings via Ollama + ChromaDB vector storage) ---
     # bge-m3: multilingual, good Hebrew coverage. Pull with: ollama pull bge-m3
     embed_model: str = Field(default="bge-m3")
+    # Training booklet ("תשעה ירחי מידע.docx") hybrid retrieval in puah.db (FTS5 trigram + bge-m3 + RRF)
+    booklet_rag_enabled: bool = Field(default=True)
+    booklet_rag_top_k: int = Field(default=3, ge=1, le=8)
+    booklet_rag_vector_enabled: bool = Field(default=True)
+    booklet_rag_live_embed: bool = Field(default=False)
     # Chroma: None = embedded (data/chroma/, On-Prem). Set host for a separate Chroma server.
     chroma_host: str | None = Field(default=None)
     chroma_port: int = Field(default=8000)
@@ -173,6 +257,9 @@ class Settings(BaseSettings):
     pii_presidio_venv: str = Field(default=".venv-presidio")
     # Minimum confidence (0–1) for a Presidio detection to be redacted
     pii_presidio_score_threshold: float = Field(default=0.4)
+    # Idle timeout (seconds) for auto-closing secondary PII daemons in the API process after
+    # manual summary regeneration (0 = keep alive). Frees ~1-2 GB RAM on 15-16 GB VMs.
+    pii_api_idle_timeout_sec: float = Field(default=180.0, ge=0.0)
 
     # --- worker ---
     # How often the worker checks for a new task in the queue
@@ -185,7 +272,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
 
     # An empty environment variable (e.g. PUAH_DEFAULT_NUM_SPEAKERS= in .env) means "unset": the
-    # field's own default — None for most, but e.g. 2.8 for the compression threshold and 30 for the
+    # field's own default — None for most, but e.g. 2.6 for the compression threshold and 30 for the
     # cluster size, so a blank line can never silently switch a check off. Otherwise pydantic would
     # fail converting "" to a number. "none"/"off" switch an optional check off explicitly, and
     # "auto" means the automatic carry-over rule.
@@ -226,6 +313,11 @@ class Settings(BaseSettings):
             raise ValueError("diarization_min_speakers must not exceed diarization_max_speakers")
         return self
 
+    def __init__(self, **values: object) -> None:
+        if "gemini_api_key" in values and "llm_provider" not in values:
+            values["llm_provider"] = "gemini"
+        super().__init__(**values)
+
     @property
     def asr_temperature_list(self) -> list[float]:
         return [float(x) for x in self.asr_temperatures.split(",") if x.strip()] or [0.0]
@@ -235,6 +327,14 @@ class Settings(BaseSettings):
         """The languages language detection may report; the first one is the default."""
         langs = [x.strip().lower() for x in (self.asr_languages or "").split(",") if x.strip()]
         return langs or [(self.language or "he").lower()]
+
+    @property
+    def reidentify_category_list(self) -> list[str]:
+        """Categories that may be restored into the deliverables — only names and organisations are
+        accepted, whatever the setting says (a phone or an ID never comes back)."""
+        allowed = {"שם", "ארגון"}
+        cats = [x.strip() for x in (self.pii_reidentify_categories or "").split(",") if x.strip()]
+        return [c for c in dict.fromkeys(cats) if c in allowed]
 
     # --- Derived properties ---
     @property

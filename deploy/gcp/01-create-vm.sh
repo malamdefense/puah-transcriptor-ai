@@ -15,7 +15,12 @@ set -Eeuo pipefail
 
 # ---------- הגדרות (ערוך לפי הצורך) ----------
 VM="${VM:-puah-vm}"
-MACHINE="${MACHINE:-g2-standard-4}"          # כולל NVIDIA L4 (24GB) — מספיק לכל הצינור
+# g2-standard-4 כולל NVIDIA L4 (24GB VRAM) ו-16GB RAM (למכונת T4: n1-standard-4 = 15GB RAM).
+# הערה חשובה על RAM: המערכת מריצה במקביל Whisper + pyannote + זוג סביבות PII מתמידות (--serve,
+# כ-1-2GB) + Ollama (bge-m3). תהליך ה-API משחרר אוטומטית את עותק ה-PII שלו לאחר 3 דקות חוסר פעילות
+# (PUAH_PII_API_IDLE_TIMEOUT_SEC=180), אך לעומס ייצור שוטף מומלץ לעלות ל-30/32GB RAM:
+#   MACHINE=g2-standard-8   (L4)   או   MACHINE=n1-standard-8 ACCEL='type=nvidia-tesla-t4,count=1'
+MACHINE="${MACHINE:-g2-standard-4}"
 DISK_GB="${DISK_GB:-250}"
 IMAGE_FAMILY="${IMAGE_FAMILY:-ubuntu-2204-lts}"
 IMAGE_PROJECT="${IMAGE_PROJECT:-ubuntu-os-cloud}"
@@ -56,12 +61,18 @@ for Z in $ZONES; do
     echo "✅✅ נוצר בהצלחה ב-$Z"
     echo "────────────────────────────────────────────────"
     echo "השלבים הבאים (מ-Cloud Shell):"
-    echo "  1. העתק את הקוד ל-VM:"
-    echo "       gcloud compute scp --recurse ~/<תיקיית-הפרויקט> $VM:~/puah --zone=$Z"
+    echo "  1. העתק את הקוד ל-VM (ללא .env המקומי, venvs, data, מטמון והקלטות):"
+    echo "       tar --exclude='.env' --exclude='.venv*' --exclude='venv' --exclude='data' --exclude='.git' \\"
+    echo "           --exclude='.claude' --exclude='.pytest_cache' --exclude='__pycache__' --exclude='*.pyc' \\"
+    echo "           --exclude='bin' --exclude='include' --exclude='lib' --exclude='lib64' --exclude='media' \\"
+    echo "           --exclude='pyvenv.cfg' --exclude='*.mp3' --exclude='*.mp4' --exclude='*.wav' --exclude='*.m4a' \\"
+    echo "           --exclude='*.docx' --exclude='*.xlsx' --exclude='diagram.png' \\"
+    echo "           -C ~/<תיקיית-הפרויקט> -czf - . | gcloud compute ssh $VM --zone=$Z -- 'mkdir -p ~/puah && tar -xzf - -C ~/puah'"
+    echo "     (אם השתמשת ב-scp — מחק קודם .env מקומי כדי שלא ישתמש ב-Ollama המקומי: rm -f ~/puah/.env)"
     echo "  2. התחבר:"
     echo "       gcloud compute ssh $VM --zone=$Z"
-    echo "  3. על ה-VM — ערוך טוקן HF והרץ את ההתקנה:"
-    echo "       cd ~/puah && nano .env    # אם כבר קיים; אחרת ייווצר בהתקנה"
+    echo "  3. על ה-VM — הרץ את ההתקנה (ואם תרצה, הזן PUAH_HF_TOKEN ו-PUHA_GEMINI_API_KEY ב-.env):"
+    echo "       cd ~/puah && cp -n .env.example .env && nano .env"
     echo "       bash deploy/gcp/02-provision.sh"
     echo "  4. לצפייה בממשק (מנהרת SSH מ-Cloud Shell):"
     echo "       gcloud compute ssh $VM --zone=$Z -- -L 127.0.0.1:8000:localhost:8000 -N"
@@ -77,5 +88,5 @@ for Z in $ZONES; do
 done
 
 echo "✗ לא נמצא מלאי GPU באף zone שנוסה. אפשרויות: נסה שוב בעוד שעה, הוסף zones ל-ZONES,"
-echo "  או שנה MACHINE/ACCEL (למשל T4:  ACCEL='type=nvidia-tesla-t4,count=1' MACHINE=n1-standard-4)."
+echo "  או שנה MACHINE/ACCEL (למשל T4:  ACCEL='type=nvidia-tesla-t4,count=1' MACHINE=n1-standard-4  או לייצור 30GB RAM: MACHINE=n1-standard-8)."
 exit 1

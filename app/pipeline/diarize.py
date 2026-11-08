@@ -27,6 +27,11 @@ os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "false")
 # silenced (it is not an actual failure).
 warnings.filterwarnings("ignore", message=r"(?s).*torchcodec.*")
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pyannote\.audio\.core\.io")
+# A speaker active for only a frame or two inside a 10 s window (a breath, a click, a "כן" over
+# the other party) leaves the embedding's statistics pooling one frame to take a std over. torch
+# warns, the embedding comes out NaN, and pyannote drops NaN embeddings before clustering
+# (pipelines/clustering.py filter_embeddings). Nothing is lost: the warning is noise in the log.
+warnings.filterwarnings("ignore", message=r"(?s)std\(\): degrees of freedom is <= 0", category=UserWarning)
 
 
 class DiarizationError(RuntimeError):

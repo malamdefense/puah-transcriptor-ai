@@ -3,11 +3,13 @@
 """Run PII removal independently — run by the Python in .venv-pii (not the application's).
 
 Import only HebSafeHarbor and stdlib, to avoid interfering with the application's dependencies
-(pydantic v2 and others). Reads JSON {"texts": [...]} from stdin, returns {"texts": [...]} to stdout.
-Loads HebSafeHarbor once (the expensive load).
+(pydantic v2 and others).
 
-Usage (by pii.py as a subprocess):
-    .venv-pii/python app/pii_runner.py  < input.json  > output.json
+Modes:
+  * Single-shot (default): reads JSON {"texts": [...]} from stdin, writes {"texts": [...]} to stdout.
+  * Persistent daemon (--serve): loads HebSafeHarbor once, writes {"ready": true} line to stdout,
+    then processes JSON-line requests from stdin and writes one JSON-line response per request.
+  * Probe (--probe): imports HebSafeHarbor without loading the transformer model and exits 0 or 3.
 """
 
 import json
@@ -43,6 +45,22 @@ def keep_countries() -> None:
     CountryAnonymizerOperator.operate = lambda self, text, params=None: text
 
 
+def redact_batch(hsh, texts: list) -> list:
+    """Redact all non-empty strings in `texts` using an initialized HebSafeHarbor instance."""
+    nonempty_idx = [i for i, t in enumerate(texts) if t and str(t).strip()]
+    docs = [{"text": str(texts[i])} for i in nonempty_idx]
+
+    anon = list(texts)
+    if docs:
+        output = hsh(docs)
+        for pos, out in zip(nonempty_idx, output):
+            try:
+                anon[pos] = out.anonymized_text.text
+            except Exception:
+                anon[pos] = ""
+    return anon
+
+
 def probe() -> int:
     """--probe: can HebSafeHarbor be imported here at all?
 
@@ -57,10 +75,67 @@ def probe() -> int:
     return 0
 
 
+def serve() -> int:
+    """--serve: load HebSafeHarbor once and answer JSON-line requests over stdin/stdout."""
+    proto_out = sys.__stdout__.buffer
+    sys.stdout = sys.stderr
+
+    try:
+        from hebsafeharbor import HebSafeHarbor
+        keep_countries()
+        hsh = HebSafeHarbor()
+    except Exception as exc:  # noqa: BLE001
+        print(f"hebsafeharbor not available: {exc}", file=sys.stderr, flush=True)
+        return 3
+
+    proto_out.write((json.dumps({"ready": True, "engine": "hebsafeharbor"}) + "\n").encode("utf-8"))
+    proto_out.flush()
+
+    for raw_line in sys.stdin.buffer:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line.decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            resp = {"error": f"invalid input json: {exc}"}
+            proto_out.write((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
+            proto_out.flush()
+            continue
+
+        cmd = data.get("cmd") if isinstance(data, dict) else None
+        if cmd == "ping":
+            proto_out.write(b'{"ok": true}\n')
+            proto_out.flush()
+            continue
+        if cmd == "shutdown":
+            proto_out.write(b'{"ok": true}\n')
+            proto_out.flush()
+            return 0
+
+        texts = data.get("texts", []) if isinstance(data, dict) else None
+        if not isinstance(texts, list):
+            resp = {"error": "'texts' must be a list"}
+            proto_out.write((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
+            proto_out.flush()
+            continue
+
+        try:
+            anon = redact_batch(hsh, texts)
+            resp = {"texts": anon}
+        except Exception as exc:  # noqa: BLE001
+            resp = {"error": f"hebsafeharbor execution failed: {exc}"}
+        proto_out.write((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
+        proto_out.flush()
+    return 0
+
+
 def main() -> int:
     # Answered before stdin is touched — a probe sends no payload.
     if "--probe" in sys.argv[1:]:
         return probe()
+    if "--serve" in sys.argv[1:]:
+        return serve()
 
     # Read stdin as UTF-8 explicitly (not dependent on the default encoding of Windows/locale)
     try:
@@ -83,18 +158,7 @@ def main() -> int:
 
     keep_countries()
     hsh = HebSafeHarbor()
-
-    nonempty_idx = [i for i, t in enumerate(texts) if t and str(t).strip()]
-    docs = [{"text": str(texts[i])} for i in nonempty_idx]
-
-    anon = list(texts)
-    if docs:
-        output = hsh(docs)
-        for pos, out in zip(nonempty_idx, output):
-            try:
-                anon[pos] = out.anonymized_text.text
-            except Exception:
-                anon[pos] = ""
+    anon = redact_batch(hsh, texts)
 
     sys.stdout.buffer.write(json.dumps({"texts": anon}, ensure_ascii=False).encode("utf-8"))
     sys.stdout.buffer.flush()

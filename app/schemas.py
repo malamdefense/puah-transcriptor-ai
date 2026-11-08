@@ -32,6 +32,12 @@ class Word(BaseModel):
     end: float
     word: str
     speaker: Optional[str] = None
+    # Whisper's word probability (3 decimals); None for results from before it was kept
+    probability: Optional[float] = None
+    # "gate_failed" / "sampled_hi": the word's decode window should be checked against the audio
+    window_flag: Optional[str] = None
+    # Per-word language, when a language-aware stage set one
+    lang: Optional[str] = None
 
 
 class Segment(BaseModel):
@@ -72,6 +78,16 @@ class TranscriptResult(BaseModel):
     # Placeholder-tag check of the generated texts (labels and counts only, never text)
     client_summary_check: Optional[dict] = None
     feedback_check: Optional[dict] = None
+    # Re-identification record of the generated texts (labels, counts and character spans only)
+    client_summary_reid: Optional[dict] = None
+    feedback_reid: Optional[dict] = None
+    # Recording-quality check: numbers, flag codes and fixed Hebrew messages only (never transcript text)
+    audio_quality: Optional[dict] = None
+    # Provenance and post-processing audit of the transcription (ids, settings, counts; never a
+    # path or text) and how word confidence may be displayed. None for older results.
+    asr_config: Optional[dict] = None
+    confidence_display: Optional[dict] = None
+    asr_postprocess: Optional[dict] = None
 
 
 class SpeakerRename(BaseModel):

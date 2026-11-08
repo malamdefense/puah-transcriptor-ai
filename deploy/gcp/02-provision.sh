@@ -125,23 +125,46 @@ for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>
 curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1 || die "Ollama אינו מגיב על 11434"
 ok "Ollama פעיל (גרסה $(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1))"
 
-# ---------- שלב 4: קובץ .env + טוקן HF ----------
+# ---------- שלב 4: קובץ .env + טוקן HF + מפתח Gemini ----------
 say "שלב 4/9 — הגדרות (.env)"
 cd "$PROJECT_DIR"
 [[ -f .env ]] || { cp .env.example .env; ok ".env נוצר מ-.env.example"; }
 chmod 600 .env
-HF_TOKEN="$(grep -E '^PUAH_HF_TOKEN=' .env | head -1 | cut -d= -f2- || true)"
+HF_TOKEN="$(grep -E '^PUAH_HF_TOKEN=' .env | head -1 | cut -d= -f2- | tr -d '\r' || true)"
 if [[ -z "$HF_TOKEN" || "$HF_TOKEN" == hf_xxxx* ]]; then
   hr
   die "חסר PUAH_HF_TOKEN ב-.env. ערוך:  nano .env  (טוקן מ-https://huggingface.co/settings/tokens), ואז הרץ שוב."
 fi
+LLM_PROVIDER="$(grep -E '^PUAH_LLM_PROVIDER=' .env | head -1 | cut -d= -f2- | tr -d '\r' | tr '[:upper:]' '[:lower:]' || true)"
+if [[ "$LLM_PROVIDER" == "ollama" ]]; then
+  warn ".env מוגדר עם PUAH_LLM_PROVIDER=ollama (קונפיגורציית פיתוח מקומית), אך התקנת GCP מושכת ל-Ollama רק את '${EMBED_MODEL}' (embeddings)."
+  warn "אם הועתק .env מהמחשב המקומי — הסר/שנה ל-PUAH_LLM_PROVIDER=gemini ב-.env כדי ש-Gemini יפיק סיכומים."
+else
+  GEMINI_KEY="$(grep -E '^PUHA_GEMINI_API_KEY=' .env | head -1 | cut -d= -f2- | tr -d '\r' || true)"
+  HAS_UI_GEMINI="no"
+  if [[ -f "$PROJECT_DIR/data/secrets.json" ]] && command -v python3 >/dev/null 2>&1; then
+    HAS_UI_GEMINI="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print("yes" if (d.get("gemini_api_key") or "").strip() else "no")' "$PROJECT_DIR/data/secrets.json" 2>/dev/null || echo no)"
+  fi
+  if [[ -z "$GEMINI_KEY" && "$HAS_UI_GEMINI" != "yes" ]]; then
+    warn "חסר PUHA_GEMINI_API_KEY ב-.env (או במסך הגדרות ⚙ בממשק)."
+    warn "התמלול, זיהוי הדוברים והסרת ה-PII יעבדו כרגיל, אך הסיכומים והמשוב ידולגו עד להזנת מפתח Gemini."
+  elif [[ -n "$GEMINI_KEY" ]]; then
+    ok "מפתח Gemini מוגדר ב-.env (${#GEMINI_KEY} תווים)"
+  else
+    ok "מפתח Gemini מוגדר דרך הממשק (data/secrets.json)"
+  fi
+fi
 # עדכון שם מודל ה-embedding בהתאם להגדרות הסקריפט
-sed -i "s|^PUAH_EMBED_MODEL=.*|PUAH_EMBED_MODEL=${EMBED_MODEL}|" .env
+if grep -qE '^PUAH_EMBED_MODEL=' .env; then
+  sed -i "s|^PUAH_EMBED_MODEL=.*|PUAH_EMBED_MODEL=${EMBED_MODEL}|" .env
+else
+  printf '\nPUAH_EMBED_MODEL=%s\n' "$EMBED_MODEL" >> .env
+fi
 ok "טוקן HF מוגדר (${#HF_TOKEN} תווים)"
 
 # ---------- שלב 5: תלויות Python (.venv + .venv-pii + .venv-presidio) ----------
 say "שלב 5/9 — תלויות Python (10–15 דק' בפעם הראשונה)"
-PII_ARGS=(); [[ "$SETUP_PII" == "1" ]] || PII_ARGS+=(--skip-pii)
+PII_ARGS=(); [[ "$SETUP_PII" == "1" ]] || PII_ARGS+=(--skip-pii --skip-presidio)
 python3 rebuild.py --install-only "${PII_ARGS[@]}"
 [[ -x "$VENV_PY" ]] || die ".venv לא נוצר כראוי"
 ok "תלויות מותקנות ($([[ -d "$PROJECT_DIR/.venv-pii" ]] && echo 'כולל .venv-pii ל-PII' || echo 'ללא PII')$([[ -d "$PROJECT_DIR/.venv-presidio" ]] && echo ', כולל .venv-presidio' || echo ', ללא Presidio'))"
@@ -175,7 +198,7 @@ VRAM_B="$(curl -fsS localhost:11434/api/ps 2>/dev/null | "$VENV_PY" -c 'import s
 if [[ "${VRAM_B:-0}" -gt 0 ]]; then
   ok "  Ollama על ה-GPU (VRAM: $(( VRAM_B / 1000000000 )).$(( (VRAM_B/100000000) % 10 )) GB)"
 else
-  warn "  Ollama רץ על CPU! (size_vram=0) — הסיכומים יהיו איטיים/יעשו timeout."
+  warn "  Ollama רץ על CPU! (size_vram=0) — חישובי embeddings (RAG/eval) ירוצו על CPU (הסיכומים רצים ב-Gemini בענן)."
   warn "  בדוק:  sudo journalctl -u ollama | grep -i 'driver too old\\|library=cpu'"
   warn "  לרוב הסיבה: דרייבר NVIDIA < 550. שדרג:  sudo apt-get install -y nvidia-driver-550-server && sudo reboot"
 fi

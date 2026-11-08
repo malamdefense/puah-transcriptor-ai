@@ -355,9 +355,16 @@ def build_engines(score_threshold: float = DEFAULT_SCORE_THRESHOLD):
     return analyzer, anonymizer, operators
 
 
+_ENGINES_CACHE: dict[float, tuple] = {}
+
+
 def redact(texts: list[Any], score_threshold: float = DEFAULT_SCORE_THRESHOLD) -> tuple[list, dict[str, int]]:
     """Redact every non-empty text; returns (texts, per-entity counts)."""
-    analyzer, anonymizer, operators = build_engines(score_threshold)
+    cached = _ENGINES_CACHE.get(score_threshold)
+    if cached is None:
+        cached = build_engines(score_threshold)
+        _ENGINES_CACHE[score_threshold] = cached
+    analyzer, anonymizer, operators = cached
     out = list(texts)
     counts: dict[str, int] = {}
     for i, t in enumerate(texts):
@@ -386,10 +393,72 @@ def probe() -> int:
     return 0
 
 
+def serve() -> int:
+    """--serve: load Presidio and its recognizers once, then serve JSON-line requests."""
+    proto_out = sys.__stdout__.buffer
+    sys.stdout = sys.stderr
+
+    try:
+        import_presidio()
+        _ENGINES_CACHE[DEFAULT_SCORE_THRESHOLD] = build_engines(DEFAULT_SCORE_THRESHOLD)
+        ver = presidio_version()
+    except Exception as exc:  # noqa: BLE001
+        print(f"presidio not available: {exc}", file=sys.stderr, flush=True)
+        return 3
+
+    proto_out.write((json.dumps({"ready": True, "engine": f"presidio {ver}"}) + "\n").encode("utf-8"))
+    proto_out.flush()
+
+    for raw_line in sys.stdin.buffer:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line.decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            resp = {"error": f"invalid input json: {exc}"}
+            proto_out.write((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
+            proto_out.flush()
+            continue
+
+        cmd = data.get("cmd") if isinstance(data, dict) else None
+        if cmd == "ping":
+            proto_out.write(b'{"ok": true}\n')
+            proto_out.flush()
+            continue
+        if cmd == "shutdown":
+            proto_out.write(b'{"ok": true}\n')
+            proto_out.flush()
+            return 0
+
+        texts = data.get("texts", []) if isinstance(data, dict) else None
+        if not isinstance(texts, list):
+            resp = {"error": "'texts' must be a list"}
+            proto_out.write((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
+            proto_out.flush()
+            continue
+
+        try:
+            threshold = float(data.get("score_threshold", DEFAULT_SCORE_THRESHOLD))
+        except (TypeError, ValueError):
+            threshold = DEFAULT_SCORE_THRESHOLD
+
+        try:
+            out, counts = redact(texts, threshold)
+            resp = {"texts": out, "entities": counts, "engine": f"presidio {ver}"}
+        except Exception as exc:  # noqa: BLE001
+            resp = {"error": f"presidio execution failed: {exc}"}
+        proto_out.write((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
+        proto_out.flush()
+    return 0
+
+
 def main() -> int:
     # Answered before stdin is touched — a probe sends no payload.
     if "--probe" in sys.argv[1:]:
         return probe()
+    if "--serve" in sys.argv[1:]:
+        return serve()
 
     try:
         raw = sys.stdin.buffer.read().decode("utf-8")

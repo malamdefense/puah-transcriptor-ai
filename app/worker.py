@@ -24,18 +24,21 @@ from .db import (
     save_result,
     update_job,
 )
+from .pipeline import asr_config, audio_quality
 from .pipeline.asr_cleanup import CleanupConfig, clean_asr_segments
 from .pipeline.asr_terms import normalize_asr_segments
+from .pipeline.asr_words import join_split_segments
 from .pipeline.audio import extract_audio, get_duration
 from .pipeline.diarize import DiarizationResult, Diarizer
 from .pipeline.export_docx import build_docx
 from .pipeline.language import annotate_segments, detect_languages
 from .pipeline.merge import merge
-from .pipeline.pii import PIIError, deidentify_result, pii_title
+from .pipeline.pii import PIIError, deidentify_result, pii_title, shutdown_pii_daemons, warmup_pii_daemons
 from .pipeline.keywords import build_summary as build_local_summary
 from .pipeline.summarize import (
     generate_client_summary,
     generate_feedback,
+    store_deliverable,
 )
 from .pipeline.transcribe import Transcriber
 
@@ -57,8 +60,8 @@ def _stop(*_args):
 # Distribution of overall progress between pipeline stages
 _STAGE_WEIGHTS = {
     "extracting_audio": (0.0, 5.0),
-    "transcribing": (5.0, 65.0),
-    "diarizing": (65.0, 88.0),
+    "diarizing": (5.0, 28.0),
+    "transcribing": (28.0, 88.0),
     "merging": (88.0, 92.0),
     "summarizing": (92.0, 100.0),
 }
@@ -67,6 +70,31 @@ _STAGE_WEIGHTS = {
 def _stage_progress(stage: str, inner_pct: float) -> float:
     lo, hi = _STAGE_WEIGHTS[stage]
     return lo + (hi - lo) * (max(0.0, min(100.0, inner_pct)) / 100.0)
+
+
+def _evict_ollama_llm_from_vram(settings: Settings) -> None:
+    """Unload the local Ollama LLM from GPU VRAM before diarization/ASR so PyAnnote and
+    CTranslate2 never contend with a 14+ GB LLM on a 16 GB GPU. Best-effort."""
+    if getattr(settings, "llm_provider", "gemini") != "ollama":
+        return
+    model = (getattr(settings, "llm_model", None) or "").strip()
+    if not model:
+        return
+    try:
+        import urllib.request
+        base = (getattr(settings, "llm_base_url", "") or "http://localhost:11434").rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        req = urllib.request.Request(
+            f"{base}/api/generate",
+            data=json.dumps({"model": model, "keep_alive": 0}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None:
@@ -98,33 +126,46 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
     update_job(job_id, duration_sec=duration)
     report("extracting_audio", 100.0, force=True)
 
-    # 2) Transcription
-    log.info("Task %s: Transcription (%.0f seconds audio)", job_id, duration)
-    update_job(job_id, stage="transcribing")
-    asr_segments = transcriber.transcribe(
-        audio_path,
-        duration_sec=duration,
-        progress_cb=lambda pct: report("transcribing", pct),
-    )
-    report("transcribing", 100.0, force=True)
-
-    # 2b) Repetition clean-up, then domain-term spelling, on the raw ASR words — before the merge:
-    # the clean-up reads the alignment's per-word durations, and the merge must see the final words.
-    asr_raw = asr_segments  # the post-processing returns new lists and never mutates its input
-    asr_segments, asr_post = _postprocess_asr(settings, job_id, asr_segments)
-
-    # 3) Speaker diarization
+    # 2) Speaker diarization — before the transcription, since the recording-quality check needs
+    # each speaker's turns. Always on the original audio.
+    _evict_ollama_llm_from_vram(settings)
     log.info("Task %s: Speaker diarization", job_id)
     update_job(job_id, stage="diarizing")
     hint = job.get("num_speakers") or settings.default_num_speakers
     diar = _diarize(diarizer, audio_path, hint)
     report("diarizing", 100.0, force=True)
 
-    # 4) Merge
+    # 3) Recording-quality check (gated fixes go to a copy only the ASR hears), then transcription
+    log.info("Task %s: Transcription (%.0f seconds audio)", job_id, duration)
+    update_job(job_id, stage="transcribing")
+    asr_in = _audio_check(settings, job_id, audio_path, diar)
+    try:
+        asr_segments = transcriber.transcribe(
+            asr_in.path if asr_in else audio_path,
+            duration_sec=duration,
+            progress_cb=lambda pct: report("transcribing", pct),
+            vad_threshold=asr_in.vad_threshold if asr_in else None,
+        )
+    finally:
+        if asr_in is not None and asr_in.processed:
+            asr_in.path.unlink(missing_ok=True)
+    report("transcribing", 100.0, force=True)
+
+    # 3b) Word pieces glued, repetition clean-up, then domain-term spelling, on the raw ASR words —
+    # before the merge: the clean-up reads the alignment's per-word durations, and the merge must
+    # see the final words.
+    asr_raw = asr_segments  # the post-processing returns new lists and never mutates its input
+    asr_segments, asr_post = _postprocess_asr(settings, job_id, asr_segments)
+
+    # 4) Merge (no fix moves the time axis: the original diarization lines up with the words)
     log.info("Task %s: Merge", job_id)
     update_job(job_id, stage="merging")
     _save_merge_inputs(settings, job_id, asr_raw, diar, hint)
-    segments, speaker_ids = _merge(settings, job_id, asr_segments, diar)
+    merge_stats: dict = {}
+    segments, speaker_ids = _merge(settings, job_id, asr_segments, diar, merge_stats)
+    asr_post["merge"] = merge_stats  # counts only
+    asr_post["windows"] = _window_counts(asr_raw)
+    provenance = _asr_provenance(settings, job_id, transcriber)
 
     # Language from the transcript's script, per segment and for the call (decoding stays
     # settings.language: the model's own language-ID always answers "he")
@@ -140,7 +181,8 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
         "num_speakers": len(speaker_ids),
         "speakers": speakers,
         "segments": segments,
-        "asr_model": settings.asr_model,
+        # The model that decoded the job, by repo id — never a local path
+        "asr_model": (provenance.get("asr_config") or {}).get("model_repo_id") or _asr_model_name(settings),
         "diarization_model": settings.diarization_model,
         "summary": None,
         "client_summary": None,
@@ -152,6 +194,11 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
         update_job(job_id, language=lang["language"])
     if asr_post:
         result["asr_postprocess"] = asr_post  # counts and times only, never text
+    result.update(provenance)  # asr_config, confidence_display: ids, settings and hashes only
+    if asr_in is not None:
+        quality = _audio_report(settings, job_id, asr_in, asr_segments, diar)
+        if quality is not None:
+            result["audio_quality"] = quality  # numbers, codes and fixed messages only
     save_result(job_id, result)
 
     # Full index for full search
@@ -169,6 +216,14 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
     # 6) Summaries — generated automatically right after the transcript PII step.
     # Each product is best-effort on its own: a failure must not fail the job nor discard
     # the transcript that was already saved.
+    if getattr(settings, "llm_provider", "gemini") == "ollama":
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
     produced = False
     if segments:
         update_job(job_id, stage="summarizing", progress=_stage_progress("summarizing", 10))
@@ -197,9 +252,8 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
     if settings.client_summary_enabled and segments:
         try:
             check: dict = {}
-            result["client_summary"] = generate_client_summary(settings, result, report=check)
-            if check:
-                result["client_summary_check"] = check
+            text = generate_client_summary(settings, result, report=check)
+            store_deliverable(result, "client_summary", text, check)
             save_result(job_id, result)
             produced = True
             log.info("Task %s: Client summary generated", job_id)
@@ -208,14 +262,14 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
     if settings.feedback_enabled and segments:
         try:
             check = {}
-            result["feedback"] = generate_feedback(settings, result, report=check)
-            if check:
-                result["feedback_check"] = check
+            text = generate_feedback(settings, result, report=check)
+            store_deliverable(result, "feedback", text, check)
             save_result(job_id, result)
             produced = True
             log.info("Task %s: Feedback generated", job_id)
         except Exception as exc:  # noqa: BLE001
             log.warning("Task %s: Skipped feedback — %s", job_id, exc)
+    _evict_ollama_llm_from_vram(settings)
 
     # 7) Refresh the de-identified copy so it also covers the generated summaries.
     # Skipped when nothing was produced, to avoid a redundant PII pass.
@@ -235,12 +289,21 @@ def process_job(job: dict, transcriber: Transcriber, diarizer: Diarizer) -> None
 
 
 def _postprocess_asr(settings: Settings, job_id: str, asr_segments: list[dict]) -> tuple[list[dict], dict]:
-    """Repetition clean-up, then domain-term spelling — each best-effort, keeping the input on failure.
+    """Word pieces glued (I1), repetition clean-up, then domain-term spelling — each best-effort,
+    keeping the input on failure.
 
     Returns (segments, audit) where audit holds counts and times only. Failures log the exception
     type alone, so nothing from the call can reach the log.
     """
     audit: dict = {}
+    if settings.asr_join_split_words:
+        try:
+            asr_segments, gstats = join_split_segments(asr_segments)
+            audit["glue"] = gstats
+            log.info("Task %s: ASR word pieces glued: %d of %d pieces joined their word",
+                     job_id, gstats["glued"], gstats["pieces_in"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Task %s: ASR word gluing skipped (%s)", job_id, type(exc).__name__)
     if settings.asr_cleanup_enabled:
         try:
             asr_segments, cstats = clean_asr_segments(asr_segments, CleanupConfig.from_settings(settings))
@@ -262,6 +325,27 @@ def _postprocess_asr(settings: Settings, job_id: str, asr_segments: list[dict]) 
     return asr_segments, audit
 
 
+def _audio_check(settings: Settings, job_id: str, audio_path: Path, diar: DiarizationResult):
+    """Pre-ASR recording-quality check — best-effort: on any failure the original is transcribed at
+    the configured VAD threshold and the job carries no audio_quality."""
+    if not settings.audio_check_enabled:
+        return None
+    try:
+        return audio_quality.prepare_asr_input(audio_path, diar, settings, settings.audio_dir)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Task %s: Audio check skipped (%s) — transcribing the original", job_id, type(exc).__name__)
+        return None
+
+
+def _audio_report(settings: Settings, job_id: str, asr_in, asr_segments: list[dict], diar: DiarizationResult):
+    """The complete recording-quality report (per-speaker word confidence and flags) — best-effort."""
+    try:
+        return audio_quality.finalize_report(asr_in.report, asr_segments, diar, settings)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Task %s: Audio quality report skipped (%s)", job_id, type(exc).__name__)
+        return None
+
+
 def _diarize(diarizer: Diarizer, audio_path: Path, hint: int | None) -> DiarizationResult:
     """Both diarization views in one pipeline call; diarizers exposing only diarize() (test fakes)
     give the regular turns alone, so the merge assigns words on them."""
@@ -271,22 +355,90 @@ def _diarize(diarizer: Diarizer, audio_path: Path, hint: int | None) -> Diarizat
     return DiarizationResult(turns=diarizer.diarize(audio_path, num_speakers=hint), exclusive_turns=None)
 
 
-def _merge(settings: Settings, job_id: str, asr_segments: list[dict], diar: DiarizationResult):
+def _merge(settings: Settings, job_id: str, asr_segments: list[dict], diar: DiarizationResult,
+           stats: dict | None = None):
     """Word-to-speaker merge. The exclusive-turn assignment and the smoothing rules are an
-    improvement, not a requirement: if they fail, the job still gets the plain overlap assignment."""
+    improvement, not a requirement: if they fail, the job still gets the plain overlap assignment.
+
+    `stats` (a dict, filled in place) receives the merge's counts (words, outside, exclusive,
+    smooth, r0/r1/r2 relabels) plus rules_skipped; logged at INFO when merge_log_counts."""
+    stats = {} if stats is None else stats
     try:
-        return merge(
+        out = merge(
             asr_segments,
             diar.turns,
             exclusive_turns=diar.exclusive_turns if settings.merge_use_exclusive else None,
             smooth=settings.merge_smoothing,
+            stats=stats,
         )
+        stats["rules_skipped"] = False
     except Exception as exc:  # noqa: BLE001
         if not (settings.merge_use_exclusive or settings.merge_smoothing):
             raise
         log.warning("Task %s: Merge rules skipped (%s) — plain assignment on the regular turns",
                     job_id, type(exc).__name__)
-        return merge(asr_segments, diar.turns, exclusive_turns=None, smooth=False)
+        stats.clear()  # the counts of the failed attempt do not describe the result
+        out = merge(asr_segments, diar.turns, exclusive_turns=None, smooth=False, stats=stats)
+        stats["rules_skipped"] = True
+    if settings.merge_log_counts:
+        # Counts only — never transcript text
+        log.info("Task %s: Merge %d words, %d outside every turn, relabelled R0 %d, R1 %d, R2 %d "
+                 "(exclusive=%s, smoothing=%s, rules skipped=%s)",
+                 job_id, stats.get("words", 0), stats.get("outside", 0), stats.get("r0", 0),
+                 stats.get("r1", 0), stats.get("r2", 0), stats.get("exclusive"), stats.get("smooth"),
+                 stats["rules_skipped"])
+    return out
+
+
+def _window_counts(asr_raw: list[dict]) -> dict:
+    """Decode windows of the transcriber output (distinct `seek`), how many were re-decoded by
+    temperature fallback, and how many carry each window flag. Counts only."""
+    windows: dict = {}
+    for seg in asr_raw:
+        seek = seg.get("seek")
+        if seek is not None and seek not in windows:
+            windows[seek] = seg
+    first = list(windows.values())
+    return {
+        "n": len(first),
+        "fallback": sum(1 for s in first if (s.get("temperature") or 0.0) > 0.0),
+        "gate_failed": sum(1 for s in first if s.get("window_flag") == "gate_failed"),
+        "sampled_hi": sum(1 for s in first if s.get("window_flag") == "sampled_hi"),
+    }
+
+
+def _asr_model_name(settings: Settings) -> str:
+    """The configured model's repo id, or "local" for a model directory (never a path)."""
+    return asr_config.model_identity(settings.asr_model).get("repo_id") or "local"
+
+
+def _asr_provenance(settings: Settings, job_id: str, transcriber) -> dict:
+    """{"asr_config": ..., "confidence_display": ...} for the result: ids, settings and hashes,
+    never a path or text. Best-effort: provenance never fails a job."""
+    try:
+        identity_fn = getattr(transcriber, "loaded_identity", None)
+        if identity_fn is not None:
+            ident = identity_fn()
+        else:  # a transcriber without the method (tests): what was requested
+            ident = {"device": getattr(transcriber, "device", None),
+                     "compute_type": getattr(transcriber, "compute_type", None),
+                     **asr_config.model_identity(settings.asr_model)}
+        decode = getattr(transcriber, "last_decode", None) or {}
+        out = {"asr_config": asr_config.build_asr_config(
+            settings,
+            model_repo_id=ident.get("repo_id"),
+            model_commit=ident.get("commit"),
+            device=ident.get("device"),
+            compute_type=ident.get("compute_type"),
+            condition_on_previous_text=decode.get("condition_on_previous_text"),
+        )}
+        if settings.confidence_display_enabled:
+            out["confidence_display"] = asr_config.build_confidence_display(
+                settings, model_commit=ident.get("commit"))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Task %s: ASR provenance not recorded (%s)", job_id, type(exc).__name__)
+        return {}
 
 
 def _save_merge_inputs(
@@ -307,6 +459,7 @@ def _save_merge_inputs(
                     "turns": diar.turns,
                     "exclusive_turns": diar.exclusive_turns,
                     "params": {
+                        "asr_join_split_words": settings.asr_join_split_words,
                         "asr_cleanup_enabled": settings.asr_cleanup_enabled,
                         "asr_term_normalization_enabled": settings.asr_term_normalization_enabled,
                         "num_speakers_hint": hint,
@@ -402,8 +555,10 @@ def main() -> None:
     if settings.preload_models:
         log.info("Preloading models (device=%s, compute=%s)...", transcriber.device, transcriber.compute_type)
         try:
+            _evict_ollama_llm_from_vram(settings)
             transcriber.load()
             diarizer.load()
+            warmup_pii_daemons(settings)
             log.info("Models loaded successfully.")
         except Exception as exc:
             log.warning("Preloading failed (will continue lazily when needed): %s", exc)
@@ -434,7 +589,8 @@ def main() -> None:
                 finished_at=time.time(),
             )
 
-    # Clean shutdown of the DB connection
+    # Clean shutdown of the DB connection and PII daemons
+    shutdown_pii_daemons()
     try:
         get_conn().close()
     except Exception:
