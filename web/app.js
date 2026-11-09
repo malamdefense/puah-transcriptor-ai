@@ -66,12 +66,20 @@ function languageLabel(res) {
 }
 
 // ---------- Health check ----------
+// The system version in the header, after the title (from /api/health = app/__init__.py __version__).
+function showVersion(v) {
+  const el = $("appVersion");
+  if (!el) return;
+  el.textContent = v ? `גרסה ${v}` : "";
+}
+
 async function checkHealth() {
   const el = $("health");
   try {
     const r = await fetch(`${API}/health`);
     if (!r.ok) throw new Error();
-    await r.json();
+    const h = await r.json();
+    showVersion(h && h.version);
     // Connected — no need to show anything
     el.className = "health hidden";
     el.textContent = "";

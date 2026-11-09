@@ -48,6 +48,8 @@ body {
   box-shadow: var(--shadow);
 }
 .topbar h1 { font-size: 19px; margin: 0; }
+.app-version { font-size: 13px; font-weight: 500; color: var(--text-dim); margin-inline-start: 6px; white-space: nowrap; }
+.app-version:empty { display: none; }
 .sub { margin: 2px 0 0; color: var(--text-dim); font-size: 13px; }
 .health { font-size: 13px; color: var(--text-dim); }
 .health.ok { color: var(--ok); }

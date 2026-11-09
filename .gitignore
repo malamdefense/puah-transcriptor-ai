@@ -1,5 +1,7 @@
+# נתונים (הקלטות, אודיו, תוצאות, DB) — לעולם לא בגיט
 data/
 
+# סודות
 .env
 
 # Python
@@ -44,7 +46,5 @@ include/
 .claude/
 .claude/settings.local.json
 .claude/worktrees/
-
-tests/
 diagram.png
-diar_level.py
+tests/
